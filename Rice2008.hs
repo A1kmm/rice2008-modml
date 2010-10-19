@@ -14,7 +14,6 @@ import qualified Data.TypeHash as D
 import ModML.Units.SIUnits
 
 U.declareBaseType "normalisedForce" "normalisedForceBase"
-uNormalisedForce = M.liftM U.singletonUnit normalisedForceBase
 uProbability = U.dimensionless
 uProbabilityR = U.liftUnits uProbability
 uDistance = uMicro $*$ uMetre
@@ -24,7 +23,10 @@ uConcentrationR = U.liftUnits uConcentration
 uFlux = uConcentration $*$ uSecond $**$ (-1)
 uFluxR = U.liftUnits uFlux
 uNthOrderRate n = uConcentration $**$ (-n) $*$ uSecond $**$ (-1)
-
+uNormalisedForce = M.liftM U.singletonUnit normalisedForceBase
+uNormMass = uNormalisedForce $*$ uSecond$**$2 $*$ uDistance$**$(-1)
+uNormViscosity = uNormMass $*$ uSecond$**$(-1)
+uNormStiffness = uNormMass $*$ uLength
 type RExB = U.ModelBuilderT m U.RealExpression
 
 data ReactionParameters = Parameters {
@@ -150,7 +152,11 @@ defaultParameters =
     passiveTitinConstant = U.realConstant uNormalisedForce 0.002,
     passiveTitinExponent = U.dConstant 10,
     passiveCollagenConstant = U.realConstant uNormalisedForce 0.02,
-    passiveCollagenExponent = U.dConstant 70
+    passiveCollagenExponent = U.dConstant 70,
+    normalisedMass = U.realConstant uNormMass 0.00005,
+    normalisedViscosity = U.realConstant uViscosity 0.003,
+    constantAfterload = U.realConstant uNormalisedForce 0.5,
+    stiffness = U.realConstant uStiffness 100.5
   }
 
 R.declareNamedTaggedEntity [e|uProbabilityR|] "tmNNoXB" "Non-permissive tropomyosin not near cross-bridge"
