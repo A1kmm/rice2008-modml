@@ -148,7 +148,9 @@ defaultParameters =
     strainScalingFactor = U.dConstant 2,
     restingSarcomereLength = U.realConstant uDistance 1.9,
     passiveTitinConstant = U.realConstant uNormalisedForce 0.002,
-    passive
+    passiveTitinExponent = U.dConstant 10,
+    passiveCollagenConstant = U.realConstant uNormalisedForce 0.02,
+    passiveCollagenExponent = U.dConstant 70
   }
 
 R.declareNamedTaggedEntity [e|uProbabilityR|] "tmNNoXB" "Non-permissive tropomyosin not near cross-bridge"
