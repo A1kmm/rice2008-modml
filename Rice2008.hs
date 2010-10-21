@@ -103,8 +103,8 @@ data Parameters = Parameters {
       initialtmPXB :: RExB,
       initialXBPreR :: RExB,
       initialXBPostR :: RExB,
-      initialxXbPreR :: RExB,
-      initialxXbPostR :: RExB,
+      initialxXBPreR :: RExB,
+      initialxXBPostR :: RExB,
       initialCaTropH :: RExB,
       initialCaTropL :: RExB,
       calciumTransient :: TransientParameters,
@@ -156,7 +156,25 @@ defaultParameters =
     normalisedMass = U.realConstant uNormMass 0.00005,
     normalisedViscosity = U.realConstant uViscosity 0.003,
     constantAfterload = U.realConstant uNormalisedForce 0.5,
-    stiffness = U.realConstant uStiffness 100.5
+    stiffness = U.realConstant uStiffness 100.5,
+    initialSarcomereLength = U.realConstant uLength 1.9,
+    initialtmNNoXB = U.realConstant uProbability 0.99,
+    initialtmPNoXB = U.realConstant uProbability 0.01,
+    initialtmNXB = U.realConstant uProbability 0.97,
+    initialtmPXB = U.realConstant uProbability 0.01,
+    initialXBPreR = U.realConstant uProbability 0.01,
+    initialXBPostR = U.realConstant uProbability 0.01,
+    initialxXBPreR = U.realConstant uLength 0,
+    initialxXBPostR = U.realConstant uLength 1,
+    initialCaTropH = U.realConstant uProbability 0,
+    initialCaTropL = U.realConstant uProbability 0,
+    calciumTransient = TransientParameters {
+                         transientStartTime = U.realConstant uSecond 0.0,
+                         transientBase = U.realConstant uConcentration 0.09,
+                         transientAmplitude = U.realConstant uConcentration 1.45,
+                         transientTime1 = U.realConstant uSecond 0.02,
+                         transientTime2 = U.realConstant uSecond 0.11 },
+    xPosition = U.realConstant uDistance 0.5
   }
 
 R.declareNamedTaggedEntity [e|uProbabilityR|] "tmNNoXB" "Non-permissive tropomyosin not near cross-bridge"
@@ -175,16 +193,18 @@ R.declareRealVariable [e|uDistanceR|] "sarcomereLength" "Sarcomere length"
 
 calciumBindingToTroponinSite p site = do
   cavar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 0 calcium
-  sitevar <- R.addEntity R.EssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 site
-  let calciumTroponinBindingRateT = standardRate p (calciumBinding p)
+  sitevar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 site
+  let calciumTroponinBindingRateT = standardRate (calciumOnTrop p) (temperature p)
   R.rateEquation $ calciumTroponinBindingRateT .*. cavar .*. (U.realConstant uProbability 1 .-.  sitevar)
 
 calciumDisassociatingTroponinSite p rp site = do
   sitevar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) site
-  R.rateEquation $ (standardRate baserate Nothing Nothing q10) .*. sitevar
+  R.rateEquation $ (standardRate rp (temperature p)) .*. sitevar
 
 nToPNotNearXB = do
-  
+  pvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 tmPNoXB
+  nvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) tmNNoXB
+  R.rateEquation $ (standardRate () (temperature p)) .*. nvar
 
 reactionModel = do
   R.newAllCompartmentProcess (calciumBindingToTroponinSite caTropH)
