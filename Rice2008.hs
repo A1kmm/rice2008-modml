@@ -12,13 +12,16 @@ import qualified ModML.Reactions.Reactions as R
 import qualified Data.Data as D
 import qualified Data.TypeHash as D
 import ModML.Units.SIUnits
+import qualified Control.Monad as M
+import Data.Maybe
+import Data.List
 
 U.declareBaseType "normalisedForce" "normalisedForceBase"
 uProbability = U.dimensionless
 uProbabilityR = U.liftUnits uProbability
 uDistance = uMicro $*$ uMetre
 uDistanceR = U.liftUnits uDistance
-uConcentration = uMicro $*$ uMol $*$ uLitre $**$ (-1)
+uConcentration = uMicro $*$ uMole $*$ uLitre $**$ (-1)
 uConcentrationR = U.liftUnits uConcentration
 uFlux = uConcentration $*$ uSecond $**$ (-1)
 uFluxR = U.liftUnits uFlux
@@ -26,89 +29,89 @@ uNthOrderRate n = uConcentration $**$ (-n) $*$ uSecond $**$ (-1)
 uNormalisedForce = M.liftM U.singletonUnit normalisedForceBase
 uNormMass = uNormalisedForce $*$ uSecond$**$2 $*$ uDistance$**$(-1)
 uNormViscosity = uNormMass $*$ uSecond$**$(-1)
-uNormStiffness = uNormMass $*$ uLength
-type RExB = U.ModelBuilderT m U.RealExpression
+uNormStiffness = uNormMass $*$ uDistance
+type RExB m = U.ModelBuilderT m U.RealExpression
 
-data ReactionParameters = Parameters {
-      baseRate :: RExB,
-      otherMod :: Maybe RExB,
-      speciesMod :: Maybe RExB,
-      q10 :: RExB
+data ReactionParameters m = ReactionParameters {
+      baseRate :: RExB m,
+      otherMod :: Maybe (RExB m),
+      speciesMod :: Maybe (RExB m),
+      q10 :: RExB m
     }
-standardRate :: Monad m => ReactionParameters -> RExB -> RExB
+standardRate :: Monad m => ReactionParameters m -> RExB m -> RExB m
 standardRate (ReactionParameters{baseRate=baseRate,otherMod=otherMod,speciesMod=speciesMod,q10=q10}) temp = do
-    l <- catMaybes [Just baseRate, otherMod, speciesMod]
-    foldl' (.*.) (q10 .**. ((temp .-. U.realConstant uCelsius 37) ./. realConstant uDimensionless 10)) l
+    let l = catMaybes [Just baseRate, otherMod, speciesMod]
+    foldl' (.*.) (q10 .**. ((temp .-. U.realConstant uCelsius 37) ./. U.dConstant 10)) l
 
-data TransientParameters = TransientParameters {
-  transientStartTime :: RExB,
-  transientBase :: RExB,
-  transientAmplitude :: RExB,
-  transientTime1 :: RExB,
-  transientTime2 :: RExB
+data TransientParameters m = TransientParameters {
+  transientStartTime :: RExB m,
+  transientBase :: RExB m,
+  transientAmplitude :: RExB m,
+  transientTime1 :: RExB m,
+  transientTime2 :: RExB m
 }
-standardTransient :: TransientParameters -> RExB -> RExB
+standardTransient :: Monad m => TransientParameters m -> RExB m -> RExB m
 standardTransient p t = do
-  timeRatio <- realCommonSubexpression ((transientTime1 p) ./. (transientTime2 p))
-  t' <- realCommonSubexpression (t .-. (transientStartTime p))
+  timeRatio <- U.realCommonSubexpression ((transientTime1 p) ./. (transientTime2 p))
+  t' <- U.realCommonSubexpression (t .-. (transientStartTime p))
   let dim1 = U.dConstant 1
   let dimm1 = U.dConstant (-1)
   let beta = timeRatio .**. (dimm1 ./. (timeRatio .-. dim1)) .-.
              timeRatio .**. (dimm1 ./. (dim1 .-. (transientTime2 p) ./. (transientTime1 p)))
-  ifX (t .<=. (transientStartTime p))
+  U.ifX (t .<=. (transientStartTime p))
     {- then -} (transientBase p)
     {- else -} $ ((transientAmplitude p .-. transientBase p) ./. beta) .*.
                  (U.expX (U.negateX (t' ./. (transientTime1 p))) .-. U.expX (U.negateX (t' ./. (transientTime2 p))))
                  .+. (transientBase p)
 
-data Parameters = Parameters {
-      maxSarcomereLength :: RExB,                           -- SL_{max}
-      minSarcomereLength :: RExB,                           -- SL_{min}
-      thickFilamentLength :: RExB,                          -- length_{thick}
-      hbareLength :: RExB,                                  -- length_{hbare}
-      thinFilamentLength :: RExB,                           -- length_{thin}
-      temperature :: RExB,                                  -- TmpC
-      calciumOnTrop :: ReactionParameters,                  -- k_{on} / Qk_{on}
-      calciumOffTropL :: ReactionParameters,                -- k_{offL} ...
-      calciumOffTropH :: ReactionParameters,                -- k_{offH} ...
-      tropomyosinNToP :: ReactionParameters,                -- k_{n_p} ...
-      tropomyosinPToN :: ReactionParameters,                -- k_{p_n} ...
-      crossBridgeFormation :: ReactionParameters,           -- f_{app} ...
-      crossBridgeDissociation :: ReactionParameters,        -- g_{app} ...
-      crossBridgeRotation :: ReactionParameters,            -- h_f...
-      crossBridgeReverseRotation :: ReactionParameters,     -- h_b...
-      rotatedCrossBridgeDissociation :: ReactionParameters, -- g_{xb}...
-      permissiveHalfActivationConstant :: RExB,             -- perm_{50}
-      permissiveHillCoefficient :: RExB,                    -- n_{perm}
-      overlapModStrongToWeak :: RExB,                       -- gslmod
-      preRotStrainFactor :: RExB,                           -- hfmdc
-      strainEffectPositive :: RExB,                         -- \sigma_p
-      strainEffectNegative :: RExB,                         -- \sigma_n
-      meanStrain :: RExB,                                   -- x_0
-      strainScalingFactor :: RExB,                          -- \phi
-      restingSarcomereLength :: RExB,                       -- SL_{rest}
-      passiveTitinConstant :: RExB,                         -- PCon_{titin}
-      passiveTitinExponent :: RExB,                         -- PExp_{titin}
-      sarcomereLengthCollagen :: RExB,                      -- SL_{collagen}
-      passiveCollagenConstant :: RExB,                      -- PCon_{collagen}
-      passiveCollagenExponent :: RExB,                      -- PExp_{collagen}
-      normalisedMass :: RExB,                               -- Mass
-      normalisedViscosity :: RExB,                          -- Viscosity
-      constantAfterload :: RExB,                            -- F^{constant}_{afterload}
-      stiffness :: RExB,                                    -- KSE
-      initialSarcomereLength :: RExB,
-      initialtmNNoXB :: RExB,
-      initialtmPNoXB :: RExB,
-      initialtmNXB :: RExB,
-      initialtmPXB :: RExB,
-      initialXBPreR :: RExB,
-      initialXBPostR :: RExB,
-      initialxXBPreR :: RExB,
-      initialxXBPostR :: RExB,
-      initialCaTropH :: RExB,
-      initialCaTropL :: RExB,
-      calciumTransient :: TransientParameters,
-      xPosition :: RExB
+data Parameters m = Parameters {
+      maxSarcomereLength :: RExB m,                           -- SL_{max}
+      minSarcomereLength :: RExB m,                           -- SL_{min}
+      thickFilamentLength :: RExB m,                          -- length_{thick}
+      hbareLength :: RExB m,                                  -- length_{hbare}
+      thinFilamentLength :: RExB m,                           -- length_{thin}
+      temperature :: RExB m,                                  -- TmpC
+      calciumOnTrop :: ReactionParameters m,                  -- k_{on} / Qk_{on}
+      calciumOffTropL :: ReactionParameters m,                -- k_{offL} ...
+      calciumOffTropH :: ReactionParameters m,                -- k_{offH} ...
+      tropomyosinNToP :: ReactionParameters m,                -- k_{n_p} ...
+      tropomyosinPToN :: ReactionParameters m,                -- k_{p_n} ...
+      crossBridgeFormation :: ReactionParameters m,           -- f_{app} ...
+      crossBridgeDissociation :: ReactionParameters m,        -- g_{app} ...
+      crossBridgeRotation :: ReactionParameters m,            -- h_f...
+      crossBridgeReverseRotation :: ReactionParameters m,     -- h_b...
+      rotatedCrossBridgeDissociation :: ReactionParameters m, -- g_{xb}...
+      permissiveHalfActivationConstant :: RExB m,             -- perm_{50}
+      permissiveHillCoefficient :: RExB m,                    -- n_{perm}
+      overlapModStrongToWeak :: RExB m,                       -- gslmod
+      preRotStrainFactor :: RExB m,                           -- hfmdc
+      strainEffectPositive :: RExB m,                         -- \sigma_p
+      strainEffectNegative :: RExB m,                         -- \sigma_n
+      meanStrain :: RExB m,                                   -- x_0
+      strainScalingFactor :: RExB m,                          -- \phi
+      restingSarcomereLength :: RExB m,                       -- SL_{rest}
+      passiveTitinConstant :: RExB m,                         -- PCon_{titin}
+      passiveTitinExponent :: RExB m,                         -- PExp_{titin}
+      sarcomereLengthCollagen :: RExB m,                      -- SL_{collagen}
+      passiveCollagenConstant :: RExB m,                      -- PCon_{collagen}
+      passiveCollagenExponent :: RExB m,                      -- PExp_{collagen}
+      normalisedMass :: RExB m,                               -- Mass
+      normalisedViscosity :: RExB m,                          -- Viscosity
+      constantAfterload :: RExB m,                            -- F^{constant}_{afterload}
+      stiffness :: RExB m,                                    -- KSE
+      initialSarcomereLength :: RExB m,
+      initialtmNNoXB :: RExB m,
+      initialtmPNoXB :: RExB m,
+      initialtmNXB :: RExB m,
+      initialtmPXB :: RExB m,
+      initialXBPreR :: RExB m,
+      initialXBPostR :: RExB m,
+      initialxXBPreR :: RExB m,
+      initialxXBPostR :: RExB m,
+      initialCaTropH :: RExB m,
+      initialCaTropL :: RExB m,
+      calciumTransient :: TransientParameters m,
+      xPosition :: RExB m
     }
 
 defaultReactionParameters = ReactionParameters {baseRate=U.realConstant (uNthOrderRate 0) 0, otherMod=Nothing, speciesMod=Nothing,
@@ -116,12 +119,12 @@ defaultReactionParameters = ReactionParameters {baseRate=U.realConstant (uNthOrd
 
 defaultParameters =
   Parameters {
-    maxSarcomereLength = realConstant uDistance 2.4,
-    minSarcomereLength = realConstant uDistance 1.4,
-    thickFilamentLength = realConstant uDistance 1.65,
-    hbareLength = realConstant uDistance 0.1,
-    thinFilamentLength = realConstant uDistance 1.2,
-    temperature = realConstant uCelsius 37,
+    maxSarcomereLength = U.realConstant uDistance 2.4,
+    minSarcomereLength = U.realConstant uDistance 1.4,
+    thickFilamentLength = U.realConstant uDistance 1.65,
+    hbareLength = U.realConstant uDistance 0.1,
+    thinFilamentLength = U.realConstant uDistance 1.2,
+    temperature = U.realConstant uCelsius 37,
     calciumOnTrop = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 1) 50,
                                                 q10=U.dConstant 1.5},
     calciumOffTropL = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 250,
@@ -140,6 +143,8 @@ defaultParameters =
                                                       q10=U.dConstant 6.25 },
     crossBridgeReverseRotation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 400,
                                                              q10=U.dConstant 6.25 },
+    rotatedCrossBridgeDissociation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 70,
+                                                                 q10 = U.dConstant 2.5 },
     permissiveHalfActivationConstant = U.dConstant 0.5,
     permissiveHillCoefficient = U.dConstant 15,
     overlapModStrongToWeak = U.dConstant 6,
@@ -151,21 +156,22 @@ defaultParameters =
     restingSarcomereLength = U.realConstant uDistance 1.9,
     passiveTitinConstant = U.realConstant uNormalisedForce 0.002,
     passiveTitinExponent = U.dConstant 10,
+    sarcomereLengthCollagen = U.realConstant uDistance 2.25,
     passiveCollagenConstant = U.realConstant uNormalisedForce 0.02,
     passiveCollagenExponent = U.dConstant 70,
     normalisedMass = U.realConstant uNormMass 0.00005,
-    normalisedViscosity = U.realConstant uViscosity 0.003,
+    normalisedViscosity = U.realConstant uNormViscosity 0.003,
     constantAfterload = U.realConstant uNormalisedForce 0.5,
-    stiffness = U.realConstant uStiffness 100.5,
-    initialSarcomereLength = U.realConstant uLength 1.9,
+    stiffness = U.realConstant uNormStiffness 100.5,
+    initialSarcomereLength = U.realConstant uDistance 1.9,
     initialtmNNoXB = U.realConstant uProbability 0.99,
     initialtmPNoXB = U.realConstant uProbability 0.01,
     initialtmNXB = U.realConstant uProbability 0.97,
     initialtmPXB = U.realConstant uProbability 0.01,
     initialXBPreR = U.realConstant uProbability 0.01,
     initialXBPostR = U.realConstant uProbability 0.01,
-    initialxXBPreR = U.realConstant uLength 0,
-    initialxXBPostR = U.realConstant uLength 1,
+    initialxXBPreR = U.realConstant uDistance 0,
+    initialxXBPostR = U.realConstant uDistance 1,
     initialCaTropH = U.realConstant uProbability 0,
     initialCaTropL = U.realConstant uProbability 0,
     calciumTransient = TransientParameters {
@@ -177,44 +183,58 @@ defaultParameters =
     xPosition = U.realConstant uDistance 0.5
   }
 
-R.declareNamedTaggedEntity [e|uProbabilityR|] "tmNNoXB" "Non-permissive tropomyosin not near cross-bridge"
-R.declareNamedTaggedEntity [e|uProbabilityR|] "tmPNoXB" "Permissive tropomyosin not near cross-bridge"
-R.declareNamedTaggedEntity [e|uProbabilityR|] "tmNXB" "Non-permissive tropomyosin near cross-bridge"
-R.declareNamedTaggedEntity [e|uProbabilityR|] "tmPXB" "Permissive tropomyosin near cross-bridge"
-R.declareNamedTaggedEntity [e|uProbabilityR|] "xbPreR" "Cross bridges (pre rotation)"
-R.declareNamedTaggedEntity [e|uProbabilityR|] "xbPostR" "Cross bridges (post rotation)"
-R.declareNamedTaggedEntity [e|uDistanceR|] "xXbPreR" "Average distortion of cross bridges (pre rotation)"
-R.declareNamedTaggedEntity [e|uDistanceR|] "xXbPostR" "Average distortion of cross bridges (post rotation)"
-R.declareNamedTaggedEntity [e|uProbabilityR|] "caTropH" "Troponin with calcium bound to the high-affinity regulatory site"
-R.declareNamedTaggedEntity [e|uProbabilityR|] "caTropL" "Troponin with calcium bound to the low-affinity regulatory site"
-R.declareNamedTaggedEntity [e|uConcentrationR|] "calcium" "Calcium^(2+) concentration"
+R.declareNamedTaggedEntity [e|uProbabilityR|] "Non-permissive tropomyosin not near cross-bridge" "tmNNoXB"
+R.declareNamedTaggedEntity [e|uProbabilityR|] "Permissive tropomyosin not near cross-bridge" "tmPNoXB"
+R.declareNamedTaggedEntity [e|uProbabilityR|] "Non-permissive tropomyosin near cross-bridge" "tmNXB"
+R.declareNamedTaggedEntity [e|uProbabilityR|] "Permissive tropomyosin near cross-bridge" "tmPXB"
+R.declareNamedTaggedEntity [e|uProbabilityR|] "Cross bridges (pre rotation)" "xbPreR"
+R.declareNamedTaggedEntity [e|uProbabilityR|] "Cross bridges (post rotation)" "xbPostR"
+R.declareNamedTaggedEntity [e|uDistanceR|] "Average distortion of cross bridges (pre rotation)" "xXbPreR"
+R.declareNamedTaggedEntity [e|uDistanceR|] "Average distortion of cross bridges (post rotation)" "xXbPostR"
+R.declareNamedTaggedEntity [e|uProbabilityR|] "Troponin with calcium bound to the high-affinity regulatory site" "caTropH"
+R.declareNamedTaggedEntity [e|uProbabilityR|] "Troponin with calcium bound to the low-affinity regulatory site" "caTropL"
+R.declareNamedTaggedEntity [e|uConcentrationR|] "Calcium^(2+) concentration" "calcium"
 
-R.declareRealVariable [e|uDistanceR|] "sarcomereLength" "Sarcomere length"
+R.declareNamedTaggedCompartment "Cardiac Muscle Site" "cardiacMuscleSite"
 
-calciumBindingToTroponinSite p site = do
-  cavar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 0 calcium
-  sitevar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 site
+U.declareRealVariable [e|uDistanceR|] "Sarcomere length" "sarcomereLength"
+
+-- Functions for sarcomere geometry...
+singleOverlapNearestZ p x = U.minX (thickFilamentLength p) x ./. U.dConstant 2
+singleOverlapNearestCentreLine p x = U.maxX (xPosition p ./. U.dConstant 2 .-.
+                                             (xPosition p .-. thinFilamentLength p))
+                                            (hbareLength p ./. U.dConstant 2)
+
+calciumBindingToTroponinSite p site compartment = do
+  cavar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 0 (calcium `R.withCompartment` compartment)
+  sitevar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 (site `R.withCompartment` compartment)
   let calciumTroponinBindingRateT = standardRate (calciumOnTrop p) (temperature p)
   R.rateEquation $ calciumTroponinBindingRateT .*. cavar .*. (U.realConstant uProbability 1 .-.  sitevar)
 
-calciumDisassociatingTroponinSite p rp site = do
-  sitevar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) site
+calciumDisassociatingTroponinSite p rp site compartment = do
+  sitevar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (site `R.withCompartment` compartment)
   R.rateEquation $ (standardRate rp (temperature p)) .*. sitevar
 
-nToPNotNearXB = do
-  pvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 tmPNoXB
-  nvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) tmNNoXB
-  R.rateEquation $ (standardRate () (temperature p)) .*. nvar
+nToPNotNearXB p c = do
+  pvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 (tmPNoXB `R.withCompartment` c)
+  nvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (tmNNoXB `R.withCompartment` c)
+  R.rateEquation $ (standardRate (tropomyosinNToP p) (temperature p)) .*. nvar
+pToNNotNearXB p c = do
+  pvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess (-1) (tmPNoXB `R.withCompartment` c)
+  nvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess 1 (tmNNoXB `R.withCompartment` c)
+  R.rateEquation $ (standardRate (tropomyosinNToP p) (temperature p)) .*. pvar
 
-reactionModel = do
-  R.newAllCompartmentProcess (calciumBindingToTroponinSite caTropH)
-  R.newAllCompartmentProcess (calciumDisassociatingTroponinSite caTropH calciumOffTropBaseRate calciumOffTropQ10)
-  R.newAllCompartmentProcess (calciumBindingToTroponinSite caTropL)
-  R.newAllCompartmentProcess (calciumDisassociatingTroponinSite caTropH calciumOffTropBaseRate calciumOffTropQ10)
+reactionModel p = do
+  R.newAllCompartmentProcess $ calciumBindingToTroponinSite p caTropH
+  R.newAllCompartmentProcess $ calciumDisassociatingTroponinSite p (calciumOffTropH p) caTropH
+  R.newAllCompartmentProcess $ calciumBindingToTroponinSite p caTropL
+  R.newAllCompartmentProcess $ calciumDisassociatingTroponinSite p (calciumOffTropL p) caTropL
+  R.newAllCompartmentProcess $ nToPNotNearXB p
+  R.newAllCompartmentProcess $ pToNNotNearXB p
 
 unitsModel :: Monad m => U.ModelBuilderT m ()
 unitsModel = do
-  R.runReactionBuilderInUnitBuilder reactionModel
+  R.runReactionBuilderInUnitBuilder (reactionModel defaultParameters)
 
 model = B.buildModel $ do
   U.unitsToCore uSecond unitsModel
