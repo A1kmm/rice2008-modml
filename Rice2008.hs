@@ -30,6 +30,7 @@ uNormalisedForce = M.liftM U.singletonUnit normalisedForceBase
 uNormMass = uNormalisedForce $*$ uSecond$**$2 $*$ uDistance$**$(-1)
 uNormViscosity = uNormMass $*$ uSecond$**$(-1)
 uNormStiffness = uNormMass $*$ uDistance
+uForceIntegral = uNormalisedForce $*$ uSecond
 type RExB m = U.ModelBuilderT m U.RealExpression
 
 data ReactionParameters m = ReactionParameters {
@@ -63,6 +64,8 @@ standardTransient p t = do
     {- else -} $ ((transientAmplitude p .-. transientBase p) ./. beta) .*.
                  (U.expX (U.negateX (t' ./. (transientTime1 p))) .-. U.expX (U.negateX (t' ./. (transientTime2 p))))
                  .+. (transientBase p)
+
+data ModelContext = IsolatedCell | Trabeculae
 
 data Parameters m = Parameters {
       maxSarcomereLength :: RExB m,                           -- SL_{max}
@@ -111,7 +114,8 @@ data Parameters m = Parameters {
       initialCaTropH :: RExB m,
       initialCaTropL :: RExB m,
       calciumTransient :: TransientParameters m,
-      xPosition :: RExB m
+      xPosition :: RExB m,
+      modelContext :: ModelContext
     }
 
 defaultReactionParameters = ReactionParameters {baseRate=U.realConstant (uNthOrderRate 0) 0, otherMod=Nothing, speciesMod=Nothing,
@@ -180,7 +184,8 @@ defaultParameters =
                          transientAmplitude = U.realConstant uConcentration 1.45,
                          transientTime1 = U.realConstant uSecond 0.02,
                          transientTime2 = U.realConstant uSecond 0.11 },
-    xPosition = U.realConstant uDistance 0.5
+    xPosition = U.realConstant uDistance 0.5,
+    modelContext = Trabeculae
   }
 
 R.declareNamedTaggedEntity [e|uProbabilityR|] "Non-permissive tropomyosin not near cross-bridge" "tmNNoXB"
@@ -189,21 +194,50 @@ R.declareNamedTaggedEntity [e|uProbabilityR|] "Non-permissive tropomyosin near c
 R.declareNamedTaggedEntity [e|uProbabilityR|] "Permissive tropomyosin near cross-bridge" "tmPXB"
 R.declareNamedTaggedEntity [e|uProbabilityR|] "Cross bridges (pre rotation)" "xbPreR"
 R.declareNamedTaggedEntity [e|uProbabilityR|] "Cross bridges (post rotation)" "xbPostR"
-R.declareNamedTaggedEntity [e|uDistanceR|] "Average distortion of cross bridges (pre rotation)" "xXbPreR"
-R.declareNamedTaggedEntity [e|uDistanceR|] "Average distortion of cross bridges (post rotation)" "xXbPostR"
 R.declareNamedTaggedEntity [e|uProbabilityR|] "Troponin with calcium bound to the high-affinity regulatory site" "caTropH"
 R.declareNamedTaggedEntity [e|uProbabilityR|] "Troponin with calcium bound to the low-affinity regulatory site" "caTropL"
 R.declareNamedTaggedEntity [e|uConcentrationR|] "Calcium^(2+) concentration" "calcium"
 
 R.declareNamedTaggedCompartment "Cardiac Muscle Site" "cardiacMuscleSite"
 
-U.declareRealVariable [e|uDistanceR|] "Sarcomere length" "sarcomereLength"
+U.declareRealVariable [e|uDistanceR|] "Sarcomere length" "sarcomereLength" -- SL
+U.declareRealVariable [e|uDistanceR|] "Mean distortion, pre-rotation" "meanDistortionPreR" -- xXBPreR
+U.declareRealVariable [e|uDistanceR|] "Mean distortion, post-rotation" "meanDistortionPostR" -- xXBPostR
+U.declareRealVariable [e|uDistanceR|] "Integral of Force" "integralForce" -- Integral_{Force}
 
 -- Functions for sarcomere geometry...
-singleOverlapNearestZ p x = U.minX (thickFilamentLength p) x ./. U.dConstant 2
-singleOverlapNearestCentreLine p x = U.maxX (xPosition p ./. U.dConstant 2 .-.
-                                             (xPosition p .-. thinFilamentLength p))
-                                            (hbareLength p ./. U.dConstant 2)
+singleOverlapNearestZ p = U.minX (thickFilamentLength p) (xPosition p) ./. U.dConstant 2
+singleOverlapNearestCentreLine p = U.maxX (xPosition p ./. U.dConstant 2 .-.
+                                           (xPosition p .-. thinFilamentLength p))
+                                          (hbareLength p ./. U.dConstant 2)
+lengthSingleOverlap p = singleOverlapNearestZ p .-. singleOverlapNearestCentreLine p
+singleOverlapThick p = (U.dConstant 2 .*. lengthSingleOverlap p) ./. (thickFilamentLength p .-. hbareLength p)
+singleOverlapThin p = lengthSingleOverlap p ./. thinFilamentLength p
+-- Functions for normalised passive force...
+titinForce p = U.ifX (xPosition p .>=. restingSarcomereLength p)
+                 {- then -}
+                 (passiveTitinConstant p .*.
+                    (U.expX (passiveTitinExponent p .*.
+                             (xPosition p .-. restingSarcomereLength p)) .-.
+                     U.dConstant 1))
+                 {- else -}
+                 (U.negateX $ passiveTitinConstant p .*.
+                    (U.expX (passiveTitinExponent p .*.
+                             (restingSarcomereLength p .-. xPosition p)) .-.
+                     U.dConstant 1))
+collagenForce p = U.ifX (xPosition p .>=. sarcomereLengthCollagen p)
+                   {- then -}
+                   (passiveCollagenConstant p .*.
+                      (U.expX (passiveCollagenExponent p .*.
+                               (xPosition p .-. sarcomereLengthCollagen p)) .-.
+                       U.dConstant 1))
+                   {- else -}
+                   (U.realConstant uNormalisedForce 0)
+
+passiveForce p = case (modelContext p)
+                 of
+                   IsolatedCell -> titinForce p
+                   Trabeculae -> titinForce p .+. collagenForce p
 
 calciumBindingToTroponinSite p site compartment = do
   cavar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 0 (calcium `R.withCompartment` compartment)
@@ -215,14 +249,74 @@ calciumDisassociatingTroponinSite p rp site compartment = do
   sitevar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (site `R.withCompartment` compartment)
   R.rateEquation $ (standardRate rp (temperature p)) .*. sitevar
 
-nToPNotNearXB p c = do
-  pvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 (tmPNoXB `R.withCompartment` c)
-  nvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (tmNNoXB `R.withCompartment` c)
-  R.rateEquation $ (standardRate (tropomyosinNToP p) (temperature p)) .*. nvar
-pToNNotNearXB p c = do
-  pvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess (-1) (tmPNoXB `R.withCompartment` c)
-  nvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess 1 (tmNNoXB `R.withCompartment` c)
-  R.rateEquation $ (standardRate (tropomyosinNToP p) (temperature p)) .*. pvar
+tropRegulatory p catroph catropl = (U.dConstant 1 .-. singleOverlapThin p) .*. catroph .+.
+                                   singleOverlapThin p .*. catropl
+permissiveTotal p catroph catropl = (U.dConstant 1 ./. (U.dConstant 1 .+. (permissiveHalfActivationConstant p ./. tropRegulatory p catroph catropl).**. permissiveHillCoefficient)) .**. U.dConstant 0.5
+inversePermissiveTotal p catroph catropl = U.minX (U.dConstant 1 ./. permissiveTotal p catroph catropl) $ U.dConstant 100
+
+nToP pent nent p c = do
+  pvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 (pent `R.withCompartment` c)
+  nvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (nent `R.withCompartment` c)
+  catroph <- R.addEntity R.NotEssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 1 (caTropH `R.withCompartment` c)
+  catropl <- R.addEntity R.NotEssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 1 (caTropL `R.withCompartment` c)
+  R.rateEquation $ (standardRate (tropomyosinNToP p $ {otherMod = permissiveTotal p catroph catropl}) (temperature p)) .*. nvar
+
+pToN pent nent p c = do
+  pvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (pent `R.withCompartment` c)
+  nvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 (nent `R.withCompartment` c)
+  catroph <- R.addEntity R.NotEssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 1 (caTropH `R.withCompartment` c)
+  catropl <- R.addEntity R.NotEssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 1 (caTropL `R.withCompartment` c)
+  R.rateEquation $ (standardRate (tropomyosinPToN p $ {otherMod = inversePermissiveTotal p catroph catropl}) (temperature p)) .*. pvar
+
+nToPNotNearXB = nToP tmPNoXB tmNNoXB
+pToNNotNearXB = nToP tmPNoXB tmNNoXB
+nToPNearXB = nToP tmPXB tmNXB
+pToNNearXB = nToP tmPXB tmNXB
+
+pToXBPreR p c = do
+  pvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (tmPXB `R.withCompartment` c)
+  xbprervar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess (-1) (xbPreR `R.withCompartment` c)
+  R.rateEquation $ (standardRate (crossBridgeFormation p) (temperature p)) .*. pvar
+
+xbToPermissive rate fromXB p c = do
+  xbvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (fromXB `R.withCompartment` c)
+  pvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 (tmPXB `R.withCompartment` c)
+  R.rateEquation $ rate .*. xbvar
+
+xbPreRToPermissiveRate p =
+    standardRate
+      ((crossBridgeDissociation p){
+         otherMod=Just (U.dConstant 1 .+.
+                        (U.dConstant 1 .-. singleOverlapThick p) .*.
+                        (overlapModStrongToWeak p))})
+      (temperature p)
+
+xbPreRToPermissive p c = 
+  xbToPermissive (xbPreRToPermissiveRate p) xbPreR p c
+
+xbPostRToPermissiveRate p =
+    let
+        mod = U.ifX (meanDistortionPostR .<. meanStrain p)
+                {- then -} (U.expX $ strainEffectPositive p .*.
+                                 (((meanStrain p .-. meanDistortionPostR) ./. meanStrain p).**.U.dConstant 2))
+                {- else -} (U.expX $ strainEffectNegative p .*.
+                                 (((meanStrain p .-. meanDistortionPostR) ./. meanStrain p).**.U.dConstant 2))
+    in
+      standardRate ((rotatedCrossBridgeDissociation p){
+                      otherMod=Just mod }) (temperature p)
+
+xbPostRToPermissive p c =
+      xbToPermissive (xbPostRToPermissiveRate p) xbPostR p c
+
+crossBridgeRotationRate p = standardRate ((crossBridgeRotation p){otherMod = (U.negateX (U.signX meanDistortionPreR)) .*. preRotStrainFactor p .*. (meanDistortionPreR ./. meanStrain p).**.U.dConstant 2}) (temperature p)
+crossBridgePreToPost p c = do
+  xbPreRvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (xbPreR `R.withCompartment` c)
+  xbPostRvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 (xbPostR `R.withCompartment` c)
+  R.rateEquation $ crossBridgeRotationRate p .*. xbPreRvar
+crossBridgePostToPre p c = do
+  xbPreRvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 (xbPreR `R.withCompartment` c)
+  xbPostRvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (xbPostR `R.withCompartment` c)
+  R.rateEquation $ standardRate (crossBridgeReverseRotationRate p) (temperature p) .*. xbPostRvar
 
 reactionModel p = do
   R.newAllCompartmentProcess $ calciumBindingToTroponinSite p caTropH
@@ -231,10 +325,32 @@ reactionModel p = do
   R.newAllCompartmentProcess $ calciumDisassociatingTroponinSite p (calciumOffTropL p) caTropL
   R.newAllCompartmentProcess $ nToPNotNearXB p
   R.newAllCompartmentProcess $ pToNNotNearXB p
+  R.newAllCompartmentProcess $ nToPNearXB p
+  R.newAllCompartmentProcess $ pToNNearXB p
+  R.newAllCompartmentProcess $ xbPreRToPermissive p
+  R.newAllCompartmentProcess $ xbPostRToPermissive p
+  R.newAllCompartmentProcess $ crossBridgePreToPost p
+  R.newAllCompartmentProcess $ crossBridgePostToPre p
+
+physicalModel p = do
+  fappT <- U.realCommonSubexpressionX $ standardRate (crossBridgeFormation p) (temperature p)
+  gappT <- U.realCommonSubexpressionX $ xbPreRToPermissiveRate p
+  hbT <- U.realCommonSubexpressionX $ standardRate (crossBridgeReverseRotation p) (temperature p)
+  gxbT <- U.realCommonSubexpressionX $ xbPostRToPermissiveRate p
+  hfT <- U.realCommonSubexpressionX $ crossBridgeRotationRate p
+  preRTerm <- U.realCommonSubexpressionX $ fappT .*. (hbT .+. gxbT)
+  postRTerm <- U.realCommonSubexpressionX $ fappT .*. hfT
+  tot <- U.realCommonSubexpressionX $ preRTerm .+. postRTerm .+. gxbT .*. (hfT .+. gappT) .+. gappT .*. hbT
+  xbDutyFracPreR <- U.realCommonSubexpressionX $ preRTerm ./. tot
+  xbDutyFracPostR <- U.realCommonSubexpressionX $ postRTerm ./. tot
+  (U.derivative meanDistortionPreR) `U.newEq`
+    (U.dConstant 0.5 .*. U.derivative sarcomereLength
 
 unitsModel :: Monad m => U.ModelBuilderT m ()
 unitsModel = do
   R.runReactionBuilderInUnitBuilder (reactionModel defaultParameters)
+  
 
 model = B.buildModel $ do
   U.unitsToCore uSecond unitsModel
+  physicalModel
