@@ -15,6 +15,7 @@ import ModML.Units.SIUnits
 import qualified Control.Monad as M
 import Data.Maybe
 import Data.List
+import Data.Map ((!))
 
 U.declareBaseType "normalisedForce" "normalisedForceBase"
 uProbability = U.dimensionless
@@ -259,14 +260,14 @@ nToP pent nent p c = do
   nvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (nent `R.withCompartment` c)
   catroph <- R.addEntity R.NotEssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 1 (caTropH `R.withCompartment` c)
   catropl <- R.addEntity R.NotEssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 1 (caTropL `R.withCompartment` c)
-  R.rateEquation $ (standardRate (tropomyosinNToP p $ {otherMod = permissiveTotal p catroph catropl}) (temperature p)) .*. nvar
+  R.rateEquation $ (standardRate ((tropomyosinNToP p) {otherMod = permissiveTotal p catroph catropl}) (temperature p)) .*. nvar
 
 pToN pent nent p c = do
   pvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (pent `R.withCompartment` c)
   nvar <- R.addEntity R.NotEssentialForProcess R.CanBeCreatedByProcess R.ModifiedByProcess 1 (nent `R.withCompartment` c)
   catroph <- R.addEntity R.NotEssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 1 (caTropH `R.withCompartment` c)
   catropl <- R.addEntity R.NotEssentialForProcess R.CantBeCreatedByProcess R.NotModifiedByProcess 1 (caTropL `R.withCompartment` c)
-  R.rateEquation $ (standardRate (tropomyosinPToN p $ {otherMod = inversePermissiveTotal p catroph catropl}) (temperature p)) .*. pvar
+  R.rateEquation $ (standardRate ((tropomyosinPToN p) {otherMod = inversePermissiveTotal p catroph catropl}) (temperature p)) .*. pvar
 
 nToPNotNearXB = nToP tmPNoXB tmNNoXB
 pToNNotNearXB = nToP tmPNoXB tmNNoXB
@@ -331,8 +332,11 @@ reactionModel p = do
   R.newAllCompartmentProcess $ xbPostRToPermissive p
   R.newAllCompartmentProcess $ crossBridgePreToPost p
   R.newAllCompartmentProcess $ crossBridgePostToPre p
+  preRMuscle <- xbPreR `R.inCompartment` cardiacMuscleSite
+  postRMuscle <- xbPostR `R.inCompartment` cardiacMuscleSite
+  return (preRMuscle, postRMuscle)
 
-physicalModel p = do
+meanDistortionModel p = do
   fappT <- U.realCommonSubexpressionX $ standardRate (crossBridgeFormation p) (temperature p)
   gappT <- U.realCommonSubexpressionX $ xbPreRToPermissiveRate p
   hbT <- U.realCommonSubexpressionX $ standardRate (crossBridgeReverseRotation p) (temperature p)
@@ -344,13 +348,28 @@ physicalModel p = do
   xbDutyFracPreR <- U.realCommonSubexpressionX $ preRTerm ./. tot
   xbDutyFracPostR <- U.realCommonSubexpressionX $ postRTerm ./. tot
   (U.derivative meanDistortionPreR) `U.newEq`
-    (U.dConstant 0.5 .*. U.derivative sarcomereLength
+    (U.dConstant 0.5 .*. U.derivative sarcomereLength .+. (strainScalingFactor p ./. xbDutyFracPreR) .*. (fappT .*. (U.negateX xXBPreR) .+. hbT .*. (xXBPostR .-. meanStrain p .-. xXBPreR)))
+  (U.derivative meanDistortionPostR) `U.newEq`
+    (U.dConstant 0.5 .*. U.derivative sarcomereLength .+. (strainScalingFactor p ./. xbDutyFracPostR) .*. (hfT .*. (xXBPreR .+. meanStrain p .-. xXBPostR)))
 
-unitsModel :: Monad m => U.ModelBuilderT m ()
-unitsModel = do
-  R.runReactionBuilderInUnitBuilder (reactionModel defaultParameters)
-  
+sarcomereLengthModel p preRVar postRVar = do
+  fapp <- U.realCommonSubexpressionX $ standardRate (crossBridgeFormation p) (temperature p)
+  hb <- U.realCommonSubexpressionX $ standardRate (crossBridgeReverseRotation p) (temperature p)
+  gxb <- U.realCommonSubexpressionX $ standardRate (rotatedCrossBridgeDissociation p) (temperature p)
+  factive <- U.realCommonSubexpressionX $ singleOverlapThick p .*. xXBPreR .*. preRVar .*. xXBPostR .*. postRVar ./. (meanStrain p .*. )
 
-model = B.buildModel $ do
-  U.unitsToCore uSecond unitsModel
-  physicalModel
+physicalModel p preRVar postRVar = do
+  meanDistortionModel p
+  sarcomereLengthModel p preRVar postRVar
+
+unitsModel :: Monad m => Parameters m -> U.ModelBuilderT m ()
+unitsModel p = do
+  (cem, _, (preRMuscle, postRMuscle)) <- R.runReactionBuilderInUnitBuilder' (reactionModel defaultParameters)
+  preRVar <- c!preRMuscle
+  postRVar <- c!postRMuscle
+  physicalModel p preRVar postRVar
+
+parameterisedModel p = B.buildModel $ do
+  U.unitsToCore uSecond (unitsModel p)
+
+model = parameterisedModel defaultParameters
