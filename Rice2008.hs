@@ -18,59 +18,7 @@ import Data.Maybe
 import Data.List
 import Data.Map ((!))
 
-U.declareBaseType "normalisedForce" "normalisedForceBase"
-uProbability = U.dimensionless
-uProbabilityR = U.liftUnits uProbability
-uDistance = uMicro $*$ uMetre
-uDistanceR = U.liftUnits uDistance
-uConcentration = uMicro $*$ uMole $*$ uLitre $**$ (-1)
-uConcentrationR = U.liftUnits uConcentration
-uFlux = uConcentration $*$ uSecond $**$ (-1)
-uFluxR = U.liftUnits uFlux
-uNthOrderRate n = uConcentration $**$ (-n) $*$ uSecond $**$ (-1)
-uNormalisedForce = M.liftM U.singletonUnit normalisedForceBase
-uNormMass = uNormalisedForce $*$ uSecond$**$2 $*$ uDistance$**$(-1)
-uNormViscosity = uNormMass $*$ uSecond$**$(-1)
-uNormStiffness = uNormMass $*$ uDistance
-uForceIntegral = uNormalisedForce $*$ uSecond
 type RExB m = U.ModelBuilderT m U.RealExpression
-
-data ReactionParameters m = ReactionParameters {
-      baseRate :: RExB m,
-      otherMod :: Maybe (RExB m),
-      speciesMod :: Maybe (RExB m),
-      q10 :: RExB m
-    }
-standardRate :: Monad m => ReactionParameters m -> RExB m -> RExB m
-standardRate (ReactionParameters{baseRate=baseRate,otherMod=otherMod,speciesMod=speciesMod,q10=q10}) temp = do
-    let l = catMaybes [Just baseRate, otherMod, speciesMod]
-    foldl' (.*.) (q10 .**. ((temp .-. U.realConstant uCelsius 37) ./. U.dConstant 10)) l
-
-data TransientParameters m = TransientParameters {
-  transientStartTime :: RExB m,
-  transientBase :: RExB m,
-  transientAmplitude :: RExB m,
-  transientTime1 :: RExB m,
-  transientTime2 :: RExB m
-}
-standardTransient :: Monad m => TransientParameters m -> RExB m -> RExB m
-standardTransient p t = do
-  timeRatio <- U.realCommonSubexpression ((transientTime1 p) ./. (transientTime2 p))
-  t' <- U.realCommonSubexpression (t .-. (transientStartTime p))
-  let dim1 = U.dConstant 1
-  let dimm1 = U.dConstant (-1)
-  let beta = timeRatio .**. (dimm1 ./. (timeRatio .-. dim1)) .-.
-             timeRatio .**. (dimm1 ./. (dim1 .-. (transientTime2 p) ./. (transientTime1 p)))
-  U.ifX (t .<=. (transientStartTime p))
-    {- then -} (transientBase p)
-    {- else -} $ ((transientAmplitude p .-. transientBase p) ./. beta) .*.
-                 (U.expX (U.negateX (t' ./. (transientTime1 p))) .-. U.expX (U.negateX (t' ./. (transientTime2 p))))
-                 .+. (transientBase p)
-
-data ModelContext = IsolatedCell | Trabeculae
-data ContractionType = Isotonic |
-                       Isometric -- i.e. constant length
-
 data Parameters m = Parameters {
       maxSarcomereLength :: RExB m,                           -- SL_{max}
       minSarcomereLength :: RExB m,                           -- SL_{min}
@@ -122,77 +70,39 @@ data Parameters m = Parameters {
       modelContext :: ModelContext,
       contractionType :: ContractionType
     }
+data ReactionParameters m = ReactionParameters {
+      baseRate :: RExB m,
+      otherMod :: Maybe (RExB m),
+      speciesMod :: Maybe (RExB m),
+      q10 :: RExB m
+    }
+data TransientParameters m = TransientParameters {
+  transientStartTime :: RExB m,
+  transientBase :: RExB m,
+  transientAmplitude :: RExB m,
+  transientTime1 :: RExB m,
+  transientTime2 :: RExB m
+}
+data ModelContext = IsolatedCell | Trabeculae
+data ContractionType = Isotonic |
+                       Isometric -- i.e. constant length
 
-defaultReactionParameters = ReactionParameters {baseRate=U.realConstant (uNthOrderRate 0) 0, otherMod=Nothing, speciesMod=Nothing,
-                                                q10=U.dConstant 1 }
-
-defaultParameters =
-  Parameters {
-    maxSarcomereLength = U.realConstant uDistance 2.4,
-    minSarcomereLength = U.realConstant uDistance 1.4,
-    thickFilamentLength = U.realConstant uDistance 1.65,
-    hbareLength = U.realConstant uDistance 0.1,
-    thinFilamentLength = U.realConstant uDistance 1.2,
-    temperature = U.realConstant uCelsius 37,
-    calciumOnTrop = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 1) 50,
-                                                q10=U.dConstant 1.5},
-    calciumOffTropL = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 250,
-                                                  q10=U.dConstant 1.3},
-    calciumOffTropH = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 25,
-                                                  q10=U.dConstant 1.3},
-    tropomyosinNToP = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 50,
-                                                  q10=U.dConstant 1.6},
-    tropomyosinPToN = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 500,
-                                                  q10=U.dConstant 1.6 },
-    crossBridgeFormation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 500,
-                                                       q10=U.dConstant 6.25 },
-    crossBridgeDissociation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 70,
-                                                          q10=U.dConstant 2.5 },
-    crossBridgeRotation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 2000,
-                                                      q10=U.dConstant 6.25 },
-    crossBridgeReverseRotation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 400,
-                                                             q10=U.dConstant 6.25 },
-    rotatedCrossBridgeDissociation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 70,
-                                                                 q10 = U.dConstant 2.5 },
-    permissiveHalfActivationConstant = U.dConstant 0.5,
-    permissiveHillCoefficient = U.dConstant 15,
-    overlapModStrongToWeak = U.dConstant 6,
-    preRotStrainFactor = U.dConstant 5,
-    strainEffectPositive = U.dConstant 8,
-    strainEffectNegative = U.dConstant 1,
-    meanStrain = U.realConstant uDistance 0.007,
-    strainScalingFactor = U.dConstant 2,
-    restingSarcomereLength = U.realConstant uDistance 1.9,
-    passiveTitinConstant = U.realConstant uNormalisedForce 0.002,
-    passiveTitinExponent = U.dConstant 10,
-    sarcomereLengthCollagen = U.realConstant uDistance 2.25,
-    passiveCollagenConstant = U.realConstant uNormalisedForce 0.02,
-    passiveCollagenExponent = U.dConstant 70,
-    normalisedMass = U.realConstant uNormMass 0.00005,
-    normalisedViscosity = U.realConstant uNormViscosity 0.003,
-    constantAfterload = U.realConstant uNormalisedForce 0.5,
-    stiffness = U.realConstant uNormStiffness 100.5,
-    initialSarcomereLength = U.realConstant uDistance 1.9,
-    initialtmNNoXB = U.realConstant uProbability 0.99,
-    initialtmPNoXB = U.realConstant uProbability 0.01,
-    initialtmNXB = U.realConstant uProbability 0.97,
-    initialtmPXB = U.realConstant uProbability 0.01,
-    initialXBPreR = U.realConstant uProbability 0.01,
-    initialXBPostR = U.realConstant uProbability 0.01,
-    initialxXBPreR = U.realConstant uDistance 0,
-    initialxXBPostR = U.realConstant uDistance 1,
-    initialCaTropH = U.realConstant uProbability 0,
-    initialCaTropL = U.realConstant uProbability 0,
-    calciumTransient = TransientParameters {
-                         transientStartTime = U.realConstant uSecond 0.0,
-                         transientBase = U.realConstant uConcentration 0.09,
-                         transientAmplitude = U.realConstant uConcentration 1.45,
-                         transientTime1 = U.realConstant uSecond 0.02,
-                         transientTime2 = U.realConstant uSecond 0.11 },
-    xPosition = U.realConstant uDistance 0.5,
-    modelContext = Trabeculae,
-    contractionType = Isotonic
-  }
+-- Model units
+U.declareBaseType "normalisedForce" "normalisedForceBase"
+uProbability = U.dimensionless
+uProbabilityR = U.liftUnits uProbability
+uDistance = uMicro $*$ uMetre
+uDistanceR = U.liftUnits uDistance
+uConcentration = uMicro $*$ uMole $*$ uLitre $**$ (-1)
+uConcentrationR = U.liftUnits uConcentration
+uFlux = uConcentration $*$ uSecond $**$ (-1)
+uFluxR = U.liftUnits uFlux
+uNthOrderRate n = uConcentration $**$ (-n) $*$ uSecond $**$ (-1)
+uNormalisedForce = M.liftM U.singletonUnit normalisedForceBase
+uNormMass = uNormalisedForce $*$ uSecond$**$2 $*$ uDistance$**$(-1)
+uNormViscosity = uNormMass $*$ uSecond$**$(-1)
+uNormStiffness = uNormMass $*$ uDistance
+uForceIntegral = uNormalisedForce $*$ uSecond
 
 R.declareNamedTaggedEntity [e|uProbabilityR|] "Non-permissive tropomyosin not near cross-bridge" "tmNNoXB"
 R.declareNamedTaggedEntity [e|uProbabilityR|] "Permissive tropomyosin not near cross-bridge" "tmPNoXB"
@@ -210,8 +120,122 @@ U.declareRealVariable [e|uDistanceR|] "Sarcomere length" "sarcomereLength" -- SL
 U.declareRealVariable [e|uDistanceR|] "Mean distortion, pre-rotation" "meanDistortionPreR" -- xXBPreR
 U.declareRealVariable [e|uDistanceR|] "Mean distortion, post-rotation" "meanDistortionPostR" -- xXBPostR
 U.declareRealVariable [e|U.dimensionless|] "Fraction of strongly bound crossbridges" "fractSBXB" -- Fract_{SBXB}
-U.declareRealVariable [e|uDistanceR|] "Integral of Force" "integralForce" -- Integral_{Force}
+U.declareRealVariable [e|uForceIntegral|] "Integral of Force" "integralForce" -- Integral_{Force}
 
+model = parameterisedModel defaultParameters
+
+parameterisedModel p = B.buildModel $ do
+  U.unitsToCore uSecond (unitsModel p)
+
+unitsModel :: Monad m => Parameters m -> U.ModelBuilderT m ()
+unitsModel p = do
+  (cem, _, (preRMuscle, postRMuscle)) <- R.runReactionBuilderInUnitBuilder' (reactionModel defaultParameters)
+  let preRVar = U.realVariableM $ cem!preRMuscle
+  let postRVar = U.realVariableM $ cem!postRMuscle
+  physicalModel p preRVar postRVar
+
+-- The physical model...
+physicalModel :: Monad m => Parameters m -> RExB m -> RExB m -> U.ModelBuilderT m ()
+physicalModel p preRVar postRVar = do
+  meanDistortionModel p
+  sarcomereLengthModel p preRVar postRVar
+
+meanDistortionModel p = do
+  fappT <- U.realCommonSubexpression $ standardRate (crossBridgeFormation p) (temperature p)
+  gappT <- U.realCommonSubexpression $ xbPreRToPermissiveRate p
+  hbT <- U.realCommonSubexpression $ standardRate (crossBridgeReverseRotation p) (temperature p)
+  gxbT <- U.realCommonSubexpression $ xbPostRToPermissiveRate p
+  hfT <- U.realCommonSubexpression $ crossBridgeRotationRate p
+  preRTerm <- U.realCommonSubexpression $ fappT .*. (hbT .+. gxbT)
+  postRTerm <- U.realCommonSubexpression $ fappT .*. hfT
+  tot <- U.realCommonSubexpression $ preRTerm .+. postRTerm .+. gxbT .*. (hfT .+. gappT) .+. gappT .*. hbT
+  xbDutyFracPreR <- U.realCommonSubexpression $ preRTerm ./. tot
+  xbDutyFracPostR <- U.realCommonSubexpression $ postRTerm ./. tot
+  (U.derivative (U.realVariable meanDistortionPreR)) `U.newEq`
+    (U.dConstant 0.5 .*. U.derivative (U.realVariable sarcomereLength) .+. (strainScalingFactor p ./. xbDutyFracPreR) .*. (fappT .*. (U.negateX (U.realVariable meanDistortionPreR)) .+. hbT .*. ((U.realVariable meanDistortionPostR) .-. meanStrain p .-. (U.realVariable meanDistortionPreR))))
+  (U.derivative (U.realVariable meanDistortionPostR)) `U.newEq`
+    (U.dConstant 0.5 .*. U.derivative (U.realVariable sarcomereLength) .+. (strainScalingFactor p ./. xbDutyFracPostR) .*. (hfT .*. ((U.realVariable meanDistortionPreR) .+. meanStrain p .-. (U.realVariable meanDistortionPostR))))
+
+sarcomereLengthModel p preRVar postRVar = do
+  fapp <- U.realCommonSubexpression $ baseRate (crossBridgeFormation p)
+  gapp <- U.realCommonSubexpression $ baseRate (crossBridgeDissociation p)
+  hb <- U.realCommonSubexpression $ baseRate (crossBridgeReverseRotation p)
+  gxb <- U.realCommonSubexpression $ baseRate (rotatedCrossBridgeDissociation p)
+  hf <- U.realCommonSubexpression $ baseRate (crossBridgeRotation p)
+  preRContrib <- U.realCommonSubexpression $ fapp .*. (hb .+. gxb)
+  postRContrib <- U.realCommonSubexpression $ fapp .*. hf
+  denom <- U.realCommonSubexpression $ preRContrib .+. postRContrib .+. gxb .*. hf .+. gapp .*. (hb .+. gxb)
+  xbMaxPreR <- U.realCommonSubexpression $ preRContrib ./. denom
+  xbMaxPostR <- U.realCommonSubexpression $ postRContrib ./. denom
+  factive <- U.realCommonSubexpression $ U.unitsAssertion uNormalisedForce $
+               singleOverlapThick p .*. (U.realVariable meanDistortionPreR .*.
+               preRVar .+. U.realVariable meanDistortionPostR .*. postRVar) ./.
+               (meanStrain p .*. xbMaxPostR)
+  (U.realVariable fractSBXB) `U.newEq` ((preRVar .+. postRVar) ./. (xbMaxPreR .+. xbMaxPostR))
+  (U.derivative $ U.realVariable sarcomereLength) `U.newEq`
+    (((U.realVariable integralForce) .+.
+      (initialSarcomereLength p .-. (U.realVariable sarcomereLength)) .*. normalisedViscosity p)
+     ./. normalisedMass p)
+  (U.derivative $ U.realVariable integralForce) `U.newEq`
+    ((U.realExpressionTag "Active force" factive) .+. passiveForce p .-. preloadForce p .-. afterloadForce p)
+
+-- The reaction model...
+reactionModel p = do
+  R.newAllCompartmentProcesses [
+    calciumBindingToTroponinSite p caTropH,
+    calciumDisassociatingTroponinSite p (calciumOffTropH p) caTropH,
+    calciumBindingToTroponinSite p caTropL,
+    calciumDisassociatingTroponinSite p (calciumOffTropL p) caTropL,
+    nToPNotNearXB p, pToNNotNearXB p,
+    nToPNearXB p, pToNNearXB p,
+    xbPreRToPermissive p, xbPostRToPermissive p,
+    crossBridgePreToPost p, crossBridgePostToPre p
+                  ]
+
+  -- Now the entity instances where we have an initial value...
+  let zeroProbFlux = U.realConstant (uNthOrderRate 0) 0
+  R.addEntityInstance
+       (tmNNoXB `R.inCompartment` cardiacMuscleSite)
+       (R.entityFromProcesses (initialtmNNoXB p) zeroProbFlux)
+  R.addEntityInstance
+       (tmPNoXB `R.inCompartment` cardiacMuscleSite)
+       (R.entityFromProcesses (initialtmPNoXB p) zeroProbFlux)
+  R.addEntityInstance
+       (tmNXB `R.inCompartment` cardiacMuscleSite)
+       (R.entityFromProcesses (initialtmNXB p) zeroProbFlux)
+  R.addEntityInstance
+       (tmPXB `R.inCompartment` cardiacMuscleSite)
+       (R.entityFromProcesses (initialtmPXB p) zeroProbFlux)
+  R.addEntityInstance
+       (xbPreR `R.inCompartment` cardiacMuscleSite)
+       (R.entityFromProcesses (initialXBPreR p) zeroProbFlux)
+  R.addEntityInstance
+       (xbPostR `R.inCompartment` cardiacMuscleSite)
+       (R.entityFromProcesses (initialXBPostR p) zeroProbFlux)
+
+  preRMuscle <- xbPreR `R.inCompartment` cardiacMuscleSite
+  postRMuscle <- xbPostR `R.inCompartment` cardiacMuscleSite
+  return (preRMuscle, postRMuscle)
+
+standardRate :: Monad m => ReactionParameters m -> RExB m -> RExB m
+standardRate (ReactionParameters{baseRate=baseRate,otherMod=otherMod,speciesMod=speciesMod,q10=q10}) temp = do
+    let l = catMaybes [Just baseRate, otherMod, speciesMod]
+    foldl' (.*.) (q10 .**. ((temp .-. U.realConstant uCelsius 37) ./. U.dConstant 10)) l
+
+standardTransient :: Monad m => TransientParameters m -> RExB m -> RExB m
+standardTransient p t = do
+  timeRatio <- U.realCommonSubexpression ((transientTime1 p) ./. (transientTime2 p))
+  t' <- U.realCommonSubexpression (t .-. (transientStartTime p))
+  let dim1 = U.dConstant 1
+  let dimm1 = U.dConstant (-1)
+  let beta = timeRatio .**. (dimm1 ./. (timeRatio .-. dim1)) .-.
+             timeRatio .**. (dimm1 ./. (dim1 .-. (transientTime2 p) ./. (transientTime1 p)))
+  U.ifX (t .<=. (transientStartTime p))
+    {- then -} (transientBase p)
+    {- else -} $ ((transientAmplitude p .-. transientBase p) ./. beta) .*.
+                   (U.expX (U.negateX (t' ./. (transientTime1 p))) .-.
+                    U.expX (U.negateX (t' ./. (transientTime2 p))))
+                   .+. (transientBase p)
 
 -- Functions for sarcomere geometry...
 singleOverlapNearestZ p = U.minX (thickFilamentLength p) (xPosition p) ./. U.dConstant 2
@@ -283,9 +307,9 @@ pToN pent nent p c = do
   R.rateEquation $ (standardRate ((tropomyosinPToN p) {otherMod = Just $ inversePermissiveTotal p catroph catropl}) (temperature p)) .*. pvar
 
 nToPNotNearXB = nToP tmPNoXB tmNNoXB
-pToNNotNearXB = nToP tmPNoXB tmNNoXB
+pToNNotNearXB = pToN tmPNoXB tmNNoXB
 nToPNearXB = nToP tmPXB tmNXB
-pToNNearXB = nToP tmPXB tmNXB
+pToNNearXB = pToN tmPXB tmNXB
 
 pToXBPreR p c = do
   pvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (tmPXB `R.withCompartment` c)
@@ -332,75 +356,78 @@ crossBridgePostToPre p c = do
   xbPostRvar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (xbPostR `R.withCompartment` c)
   R.rateEquation $ standardRate (crossBridgeReverseRotation p) (temperature p) .*. xbPostRvar
 
-reactionModel p = do
-  R.newAllCompartmentProcess $ calciumBindingToTroponinSite p caTropH
-  R.newAllCompartmentProcess $ calciumDisassociatingTroponinSite p (calciumOffTropH p) caTropH
-  R.newAllCompartmentProcess $ calciumBindingToTroponinSite p caTropL
-  R.newAllCompartmentProcess $ calciumDisassociatingTroponinSite p (calciumOffTropL p) caTropL
-  R.newAllCompartmentProcess $ nToPNotNearXB p
-  R.newAllCompartmentProcess $ pToNNotNearXB p
-  R.newAllCompartmentProcess $ nToPNearXB p
-  R.newAllCompartmentProcess $ pToNNearXB p
-  R.newAllCompartmentProcess $ xbPreRToPermissive p
-  R.newAllCompartmentProcess $ xbPostRToPermissive p
-  R.newAllCompartmentProcess $ crossBridgePreToPost p
-  R.newAllCompartmentProcess $ crossBridgePostToPre p
-  preRMuscle <- xbPreR `R.inCompartment` cardiacMuscleSite
-  postRMuscle <- xbPostR `R.inCompartment` cardiacMuscleSite
-  return (preRMuscle, postRMuscle)
+defaultReactionParameters =
+    ReactionParameters {
+      baseRate=U.realConstant (uNthOrderRate 0) 0,
+      otherMod=Nothing,
+      speciesMod=Nothing,
+      q10=U.dConstant 1
+    }
 
-meanDistortionModel p = do
-  fappT <- U.realCommonSubexpression $ standardRate (crossBridgeFormation p) (temperature p)
-  gappT <- U.realCommonSubexpression $ xbPreRToPermissiveRate p
-  hbT <- U.realCommonSubexpression $ standardRate (crossBridgeReverseRotation p) (temperature p)
-  gxbT <- U.realCommonSubexpression $ xbPostRToPermissiveRate p
-  hfT <- U.realCommonSubexpression $ crossBridgeRotationRate p
-  preRTerm <- U.realCommonSubexpression $ fappT .*. (hbT .+. gxbT)
-  postRTerm <- U.realCommonSubexpression $ fappT .*. hfT
-  tot <- U.realCommonSubexpression $ preRTerm .+. postRTerm .+. gxbT .*. (hfT .+. gappT) .+. gappT .*. hbT
-  xbDutyFracPreR <- U.realCommonSubexpression $ preRTerm ./. tot
-  xbDutyFracPostR <- U.realCommonSubexpression $ postRTerm ./. tot
-  (U.derivative (U.realVariable meanDistortionPreR)) `U.newEq`
-    (U.dConstant 0.5 .*. U.derivative (U.realVariable sarcomereLength) .+. (strainScalingFactor p ./. xbDutyFracPreR) .*. (fappT .*. (U.negateX (U.realVariable meanDistortionPreR)) .+. hbT .*. ((U.realVariable meanDistortionPostR) .-. meanStrain p .-. (U.realVariable meanDistortionPreR))))
-  (U.derivative (U.realVariable meanDistortionPostR)) `U.newEq`
-    (U.dConstant 0.5 .*. U.derivative (U.realVariable sarcomereLength) .+. (strainScalingFactor p ./. xbDutyFracPostR) .*. (hfT .*. ((U.realVariable meanDistortionPreR) .+. meanStrain p .-. (U.realVariable meanDistortionPostR))))
-
-sarcomereLengthModel p preRVar postRVar = do
-  fapp <- U.realCommonSubexpression $ baseRate (crossBridgeFormation p)
-  gapp <- U.realCommonSubexpression $ baseRate (crossBridgeDissociation p)
-  hb <- U.realCommonSubexpression $ baseRate (crossBridgeReverseRotation p)
-  gxb <- U.realCommonSubexpression $ baseRate (rotatedCrossBridgeDissociation p)
-  hf <- U.realCommonSubexpression $ baseRate (crossBridgeRotation p)
-  preRContrib <- U.realCommonSubexpression $ fapp .*. (hb .+. gxb)
-  postRContrib <- U.realCommonSubexpression $ fapp .*. hf
-  denom <- U.realCommonSubexpression $ preRContrib .+. postRContrib .+. gxb .*. hf .+. gapp .*. (hb .+. gxb)
-  xbMaxPreR <- U.realCommonSubexpression $ preRContrib ./. denom
-  xbMaxPostR <- U.realCommonSubexpression $ postRContrib ./. denom
-  factive <- U.realCommonSubexpression $
-               singleOverlapThick p .*. U.realVariable meanDistortionPreR .*.
-               preRVar .*. U.realVariable meanDistortionPostR .*. postRVar ./.
-               (meanStrain p .*. xbMaxPostR)
-  (U.realVariable fractSBXB) `U.newEq` ((preRVar .+. postRVar) ./. (xbMaxPreR .+. xbMaxPostR))
-  (U.derivative $ U.realVariable sarcomereLength) `U.newEq`
-    (((U.realVariable integralForce) .+.
-      (initialSarcomereLength p .-. (U.realVariable sarcomereLength)) .*. normalisedViscosity p)
-     ./. normalisedMass p)
-  (U.derivative $ U.realVariable integralForce) `U.newEq`
-    (factive .+. passiveForce p .-. preloadForce p .-. afterloadForce p)
-
-physicalModel :: Monad m => Parameters m -> RExB m -> RExB m -> U.ModelBuilderT m ()
-physicalModel p preRVar postRVar = do
-  meanDistortionModel p
-  sarcomereLengthModel p preRVar postRVar
-
-unitsModel :: Monad m => Parameters m -> U.ModelBuilderT m ()
-unitsModel p = do
-  (cem, _, (preRMuscle, postRMuscle)) <- R.runReactionBuilderInUnitBuilder' (reactionModel defaultParameters)
-  let preRVar = U.realVariableM $ cem!preRMuscle
-  let postRVar = U.realVariableM $ cem!postRMuscle
-  physicalModel p preRVar postRVar
-
-parameterisedModel p = B.buildModel $ do
-  U.unitsToCore uSecond (unitsModel p)
-
-model = parameterisedModel defaultParameters
+defaultParameters =
+  Parameters {
+    maxSarcomereLength = U.realConstant uDistance 2.4,
+    minSarcomereLength = U.realConstant uDistance 1.4,
+    thickFilamentLength = U.realConstant uDistance 1.65,
+    hbareLength = U.realConstant uDistance 0.1,
+    thinFilamentLength = U.realConstant uDistance 1.2,
+    temperature = U.realConstant uCelsius 37,
+    calciumOnTrop = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 1) 50,
+                                                q10=U.dConstant 1.5},
+    calciumOffTropL = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 250,
+                                                  q10=U.dConstant 1.3},
+    calciumOffTropH = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 25,
+                                                  q10=U.dConstant 1.3},
+    tropomyosinNToP = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 50,
+                                                  q10=U.dConstant 1.6},
+    tropomyosinPToN = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 500,
+                                                  q10=U.dConstant 1.6 },
+    crossBridgeFormation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 500,
+                                                       q10=U.dConstant 6.25 },
+    crossBridgeDissociation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 70,
+                                                          q10=U.dConstant 2.5 },
+    crossBridgeRotation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 2000,
+                                                      q10=U.dConstant 6.25 },
+    crossBridgeReverseRotation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 400,
+                                                             q10=U.dConstant 6.25 },
+    rotatedCrossBridgeDissociation = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 70,
+                                                                 q10 = U.dConstant 2.5 },
+    permissiveHalfActivationConstant = U.dConstant 0.5,
+    permissiveHillCoefficient = U.dConstant 15,
+    overlapModStrongToWeak = U.dConstant 6,
+    preRotStrainFactor = U.dConstant 5,
+    strainEffectPositive = U.dConstant 8,
+    strainEffectNegative = U.dConstant 1,
+    meanStrain = U.realConstant uDistance 0.007,
+    strainScalingFactor = U.dConstant 2,
+    restingSarcomereLength = U.realConstant uDistance 1.9,
+    passiveTitinConstant = U.realConstant uNormalisedForce 0.002,
+    passiveTitinExponent = U.dConstant 10,
+    sarcomereLengthCollagen = U.realConstant uDistance 2.25,
+    passiveCollagenConstant = U.realConstant uNormalisedForce 0.02,
+    passiveCollagenExponent = U.dConstant 70,
+    normalisedMass = U.realConstant uNormMass 0.00005,
+    normalisedViscosity = U.realConstant uNormViscosity 0.003,
+    constantAfterload = U.realConstant uNormalisedForce 0.5,
+    stiffness = U.realConstant uNormStiffness 100.5,
+    initialSarcomereLength = U.realConstant uDistance 1.9,
+    initialtmNNoXB = U.realConstant uProbability 0.99,
+    initialtmPNoXB = U.realConstant uProbability 0.01,
+    initialtmNXB = U.realConstant uProbability 0.97,
+    initialtmPXB = U.realConstant uProbability 0.01,
+    initialXBPreR = U.realConstant uProbability 0.01,
+    initialXBPostR = U.realConstant uProbability 0.01,
+    initialxXBPreR = U.realConstant uDistance 0,
+    initialxXBPostR = U.realConstant uDistance 1,
+    initialCaTropH = U.realConstant uProbability 0,
+    initialCaTropL = U.realConstant uProbability 0,
+    calciumTransient = TransientParameters {
+                         transientStartTime = U.realConstant uSecond 0.0,
+                         transientBase = U.realConstant uConcentration 0.09,
+                         transientAmplitude = U.realConstant uConcentration 1.45,
+                         transientTime1 = U.realConstant uSecond 0.02,
+                         transientTime2 = U.realConstant uSecond 0.11 },
+    xPosition = U.realConstant uDistance 0.5123,
+    modelContext = Trabeculae,
+    contractionType = Isotonic
+  }
