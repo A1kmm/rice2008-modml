@@ -117,8 +117,8 @@ R.declareNamedTaggedEntity [e|uConcentrationR|] "Calcium^(2+) concentration" "ca
 R.declareNamedTaggedCompartment "Cardiac Muscle Site" "cardiacMuscleSite"
 
 U.declareRealVariable [e|uDistanceR|] "Sarcomere length" "sarcomereLength" -- SL
-U.declareRealVariable [e|uDistanceR|] "Mean distortion, pre-rotation" "meanDistortionPreR" -- xXBPreR
-U.declareRealVariable [e|uDistanceR|] "Mean distortion, post-rotation" "meanDistortionPostR" -- xXBPostR
+U.declareRealVariable [e|uDistanceR|] "Mean distortion pre-rotation" "meanDistortionPreR" -- xXBPreR
+U.declareRealVariable [e|uDistanceR|] "Mean distortion post-rotation" "meanDistortionPostR" -- xXBPostR
 U.declareRealVariable [e|U.dimensionless|] "Fraction of strongly bound crossbridges" "fractSBXB" -- Fract_{SBXB}
 U.declareRealVariable [e|uForceIntegral|] "Integral of Force" "integralForce" -- Integral_{Force}
 
@@ -130,9 +130,11 @@ parameterisedModel p = B.buildModel $ do
 unitsModel :: Monad m => Parameters m -> U.ModelBuilderT m ()
 unitsModel p = do
   (cem, _, (preRMuscle, postRMuscle)) <- R.runReactionBuilderInUnitBuilder' (reactionModel defaultParameters)
-  let preRVar = U.realVariableM $ cem!preRMuscle
-  let postRVar = U.realVariableM $ cem!postRMuscle
+  let preRVar = return $ cem!preRMuscle
+  let postRVar = return $ cem!postRMuscle
+
   physicalModel p preRVar postRVar
+  return ()
 
 -- The physical model...
 physicalModel :: Monad m => Parameters m -> RExB m -> RExB m -> U.ModelBuilderT m ()
@@ -151,8 +153,12 @@ meanDistortionModel p = do
   tot <- U.realCommonSubexpression $ preRTerm .+. postRTerm .+. gxbT .*. (hfT .+. gappT) .+. gappT .*. hbT
   xbDutyFracPreR <- U.realCommonSubexpression $ preRTerm ./. tot
   xbDutyFracPostR <- U.realCommonSubexpression $ postRTerm ./. tot
+  U.newBoundaryEq {- when -} (U.boundVariable .==. U.realConstant U.boundUnits 0)
+                             (U.realVariable meanDistortionPreR) {- == -} (initialxXBPreR p)
   (U.derivative (U.realVariable meanDistortionPreR)) `U.newEq`
     (U.dConstant 0.5 .*. U.derivative (U.realVariable sarcomereLength) .+. (strainScalingFactor p ./. xbDutyFracPreR) .*. (fappT .*. (U.negateX (U.realVariable meanDistortionPreR)) .+. hbT .*. ((U.realVariable meanDistortionPostR) .-. meanStrain p .-. (U.realVariable meanDistortionPreR))))
+  U.newBoundaryEq {- when -} (U.boundVariable .==. U.realConstant U.boundUnits 0)
+                             (U.realVariable meanDistortionPostR) {- == -} (initialxXBPostR p)
   (U.derivative (U.realVariable meanDistortionPostR)) `U.newEq`
     (U.dConstant 0.5 .*. U.derivative (U.realVariable sarcomereLength) .+. (strainScalingFactor p ./. xbDutyFracPostR) .*. (hfT .*. ((U.realVariable meanDistortionPreR) .+. meanStrain p .-. (U.realVariable meanDistortionPostR))))
 
@@ -172,10 +178,14 @@ sarcomereLengthModel p preRVar postRVar = do
                preRVar .+. U.realVariable meanDistortionPostR .*. postRVar) ./.
                (meanStrain p .*. xbMaxPostR)
   (U.realVariable fractSBXB) `U.newEq` ((preRVar .+. postRVar) ./. (xbMaxPreR .+. xbMaxPostR))
+  U.newBoundaryEq {- when -} (U.boundVariable .==. U.realConstant U.boundUnits 0)
+                             (U.realVariable sarcomereLength) {- == -} (initialSarcomereLength p)
   (U.derivative $ U.realVariable sarcomereLength) `U.newEq`
     (((U.realVariable integralForce) .+.
       (initialSarcomereLength p .-. (U.realVariable sarcomereLength)) .*. normalisedViscosity p)
      ./. normalisedMass p)
+  U.newBoundaryEq {- when -} (U.boundVariable .==. U.realConstant U.boundUnits 0)
+                             (U.realVariable integralForce) {- == -} (U.realConstant uForceIntegral 0)
   (U.derivative $ U.realVariable integralForce) `U.newEq`
     ((U.realExpressionTag "Active force" factive) .+. passiveForce p .-. preloadForce p .-. afterloadForce p)
 
@@ -194,6 +204,9 @@ reactionModel p = do
 
   -- Now the entity instances where we have an initial value...
   let zeroProbFlux = U.realConstant (uNthOrderRate 0) 0
+  R.addEntityInstance
+       (calcium `R.inCompartment` cardiacMuscleSite)
+       (R.entityClamped (standardTransient (calciumTransient p) U.boundVariable))
   R.addEntityInstance
        (tmNNoXB `R.inCompartment` cardiacMuscleSite)
        (R.entityFromProcesses (initialtmNNoXB p) zeroProbFlux)
