@@ -3,6 +3,7 @@
 -- +Require ModML-Reactions
 -- +Require typehash
 -- +Require containers
+-- +Require mtl
 
 module Rice2008
 where
@@ -14,6 +15,7 @@ import qualified Data.Data as D
 import qualified Data.TypeHash as D
 import ModML.Units.SIUnits
 import qualified Control.Monad as M
+import qualified Control.Monad.Identity as I
 import Data.Maybe
 import Data.List
 import qualified Data.Map as M
@@ -60,7 +62,6 @@ data Parameters m = Parameters {
       initialtmNNoXB :: RExB m,
       initialtmPNoXB :: RExB m,
       initialtmNXB :: RExB m,
-      initialtmPXB :: RExB m,
       initialXBPreR :: RExB m,
       initialXBPostR :: RExB m,
       initialxXBPreR :: RExB m,
@@ -77,13 +78,13 @@ data ReactionParameters m = ReactionParameters {
       speciesMod :: Maybe (RExB m),
       q10 :: RExB m
     }
-data TransientParameters m = TransientParameters {
+data TransientParameters m = TransientSpike {
   transientStartTime :: RExB m,
   transientBase :: RExB m,
   transientAmplitude :: RExB m,
   transientTime1 :: RExB m,
   transientTime2 :: RExB m
-}
+} | TransientExpRamp { transientRampInitial :: RExB m, transientRampConstant :: RExB m }
 data ModelContext = IsolatedCell | Trabeculae
 data ContractionType = Isotonic |
                        Isometric -- i.e. constant length
@@ -94,7 +95,7 @@ uProbability = U.dimensionless
 uProbabilityR = U.liftUnits uProbability
 uDistance = uMicro $*$ uMetre
 uDistanceR = U.liftUnits uDistance
-uConcentration = uMicro $*$ uMole $*$ uLitre $**$ (-1)
+uConcentration = uMilli $*$ uMole $*$ uLitre $**$ (-1)
 uConcentrationR = U.liftUnits uConcentration
 uFlux = uConcentration $*$ uSecond $**$ (-1)
 uFluxR = U.liftUnits uFlux
@@ -202,7 +203,6 @@ sarcomereLengthModel p preRVar postRVar = do
      ./. normalisedMass p)
   U.newBoundaryEq {- when -} (U.realConstant U.boundUnits 0 .==. U.boundVariable)
                              (U.realVariable integralForce) {- == -} (U.realConstant uForceIntegral 0)
-    
   vpassiveForce <- U.mkNamedRealVariable uNormalisedForce "Passive Force"
   vpreloadForce <- U.mkNamedRealVariable uNormalisedForce "Preload Force"
   vafterloadForce <- U.mkNamedRealVariable uNormalisedForce "Afterload Force"
@@ -210,10 +210,12 @@ sarcomereLengthModel p preRVar postRVar = do
   vpassiveForce `U.newEq` (passiveForce p (U.realVariable sarcomereLength))
   vpreloadForce `U.newEq` (preloadForce p)
   vafterloadForce `U.newEq` (afterloadForce p)
+  forceNormalisation <- U.mkNamedRealVariable (uProbability $*$ uDistance) "Force normalisation factor"
+  forceNormalisation `U.newEq` (meanStrain p .*. xbMaxPostR)
   vactiveForce `U.newEq` (singleOverlapThick p (U.realVariable sarcomereLength) .*.
                           (U.realVariable meanDistortionPreR .*.
                            preRVar .+. U.realVariable meanDistortionPostR .*. postRVar) ./.
-                          (meanStrain p .*. xbMaxPostR))
+                          forceNormalisation)
 
   
   (U.derivative $ U.realVariable integralForce) `U.newEq`
@@ -249,15 +251,19 @@ reactionModel normalisedPermissive p = do
   R.addEntityInstance
        (tmNXB `R.inCompartment` cardiacMuscleSite)
        (R.entityFromProcesses (initialtmNXB p) zeroProbFlux)
-  -- R.addEntityInstance
-  --      (tmPXB `R.inCompartment` cardiacMuscleSite)
-  --      (R.entityFromProcesses (initialtmPXB p) zeroProbFlux)
   R.addEntityInstance
        (xbPreR `R.inCompartment` cardiacMuscleSite)
        (R.entityFromProcesses (initialXBPreR p) zeroProbFlux)
   R.addEntityInstance
        (xbPostR `R.inCompartment` cardiacMuscleSite)
        (R.entityFromProcesses (initialXBPostR p) zeroProbFlux)
+  R.addEntityInstance
+       (caTropH `R.inCompartment` cardiacMuscleSite)
+       (R.entityFromProcesses (initialCaTropH p) zeroProbFlux)
+  R.addEntityInstance
+       (caTropL `R.inCompartment` cardiacMuscleSite)
+       (R.entityFromProcesses (initialCaTropL p) zeroProbFlux)
+       
   -- Clamped so the relative amounts add to 1.0...
   R.addEntityInstance
        (tmPXB `R.inCompartment` cardiacMuscleSite)
@@ -276,7 +282,7 @@ standardRate (ReactionParameters{baseRate=baseRate,otherMod=otherMod,speciesMod=
     foldl' (.*.) (q10 .**. ((temp .-. U.realConstant uCelsius 37) ./. U.dConstant 10)) l
 
 standardTransient :: Monad m => TransientParameters m -> RExB m -> RExB m
-standardTransient p t = do
+standardTransient p@(TransientSpike {}) t = do
   timeRatio <- U.realCommonSubexpression ((transientTime1 p) ./. (transientTime2 p))
   t' <- U.realCommonSubexpression (t .-. (transientStartTime p))
   let dim1 = U.dConstant 1
@@ -289,6 +295,8 @@ standardTransient p t = do
                    (U.expX (U.negateX (t' ./. (transientTime1 p))) .-.
                     U.expX (U.negateX (t' ./. (transientTime2 p))))
                    .+. (transientBase p)
+standardTransient p@(TransientExpRamp initial c) t =
+  initial .*. U.expX (t .*. c)
 
 -- Functions for sarcomere geometry...
 singleOverlapNearestZ p x = U.minX (thickFilamentLength p) x ./. U.dConstant 2
@@ -314,8 +322,8 @@ collagenForce p x = U.ifX (x .>=. sarcomereLengthCollagen p)
                      {- then -}
                      (passiveCollagenConstant p .*.
                         (U.expX (passiveCollagenExponent p .*.
-                                 (x .-. sarcomereLengthCollagen p)) .-.
-                         U.dConstant 1))
+                                 (x .-. sarcomereLengthCollagen p)) ){- .-.
+                         U.dConstant 1) Note: -1 in paper, not in author's XPP code -})
                      {- else -}
                      (U.realConstant uNormalisedForce 0)
 
@@ -346,8 +354,8 @@ calciumDisassociatingTroponinSite p rp site compartment = do
   sitevar <- R.addEntity R.EssentialForProcess R.CantBeCreatedByProcess R.ModifiedByProcess (-1) (site `R.withCompartment` compartment)
   R.rateEquation $ (standardRate rp (temperature p)) .*. sitevar
 
-tropRegulatory p catroph catropl = (U.dConstant 1 .-. singleOverlapThin p (U.realVariable sarcomereLength)) .*. catroph .+.
-                                   singleOverlapThin p (U.realVariable sarcomereLength) .*. catropl
+tropRegulatory p catroph catropl = (U.dConstant 1 .-. singleOverlapThin p (U.realVariable sarcomereLength)) .*. catropl .+.
+                                   singleOverlapThin p (U.realVariable sarcomereLength) .*. catroph
 permissiveTotal p catroph catropl = (U.dConstant 1 ./. (U.dConstant 1 .+. (permissiveHalfActivationConstant p ./. tropRegulatory p catroph catropl).**. permissiveHillCoefficient p)) .**. U.dConstant 0.5
 inversePermissiveTotal p catroph catropl = U.minX (U.dConstant 1 ./. permissiveTotal p catroph catropl) $ U.dConstant 100
 
@@ -423,6 +431,7 @@ defaultReactionParameters =
       q10=U.dConstant 1
     }
 
+defaultParameters :: Monad m => Parameters m
 defaultParameters =
   Parameters {
     maxSarcomereLength = U.realConstant uDistance 2.4,
@@ -431,7 +440,7 @@ defaultParameters =
     hbareLength = U.realConstant uDistance 0.1,
     thinFilamentLength = U.realConstant uDistance 1.2,
     temperature = U.realConstant uCelsius 22.5,
-    calciumOnTrop = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 1) 50,
+    calciumOnTrop = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 1) 5E4,
                                                 q10=U.dConstant 1.5},
     calciumOffTropL = defaultReactionParameters { baseRate=U.realConstant (uNthOrderRate 0) 250,
                                                   q10=U.dConstant 1.3},
@@ -473,19 +482,19 @@ defaultParameters =
     initialtmNNoXB = U.realConstant uProbability 0.9999,
     initialtmPNoXB = U.realConstant uProbability 0.0001,
     initialtmNXB = U.realConstant uProbability 0.9998,
-    initialtmPXB = U.realConstant uProbability 0.0000,
     initialXBPreR = U.realConstant uProbability 0.0001,
     initialXBPostR = U.realConstant uProbability 0.0001,
     initialxXBPreR = U.realConstant uDistance 0,
     initialxXBPostR = U.realConstant uDistance 0.007,
     initialCaTropH = U.realConstant uProbability 0.001,
     initialCaTropL = U.realConstant uProbability 0.001,
-    calciumTransient = TransientParameters {
+    calciumTransient = {- TransientSpike {
                          transientStartTime = U.realConstant uSecond 0.0,
                          transientBase = U.realConstant uConcentration 0.09,
                          transientAmplitude = U.realConstant uConcentration 1.45,
                          transientTime1 = U.realConstant uSecond 0.02,
-                         transientTime2 = U.realConstant uSecond 0.11 },
+                         transientTime2 = U.realConstant uSecond 0.11 } -}
+      TransientExpRamp (U.realConstant uConcentration 0.0002) (U.realConstant uFlux 0.05),
     modelContext = Trabeculae,
     contractionType = Isometric
   }
