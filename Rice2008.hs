@@ -61,7 +61,7 @@ data Parameters m = Parameters {
       initialSarcomereLength :: RExB m,
       initialtmNNoXB :: RExB m,
       initialtmPNoXB :: RExB m,
-      initialtmNXB :: RExB m,
+      initialtmPXB :: RExB m,
       initialXBPreR :: RExB m,
       initialXBPostR :: RExB m,
       initialxXBPreR :: RExB m,
@@ -118,11 +118,16 @@ R.declareNamedTaggedEntity [e|uConcentrationR|] "Calcium^(2+) concentration" "ca
 
 R.declareNamedTaggedCompartment "Cardiac Muscle Site" "cardiacMuscleSite"
 
-U.declareRealVariable [e|uDistanceR|] "Sarcomere length" "sarcomereLength" -- SL
-U.declareRealVariable [e|uDistanceR|] "Mean distortion pre-rotation" "meanDistortionPreR" -- xXBPreR
-U.declareRealVariable [e|uDistanceR|] "Mean distortion post-rotation" "meanDistortionPostR" -- xXBPostR
+U.declareRealVariable [e|uDistance|] "Sarcomere length" "sarcomereLength" -- SL
+U.declareRealVariable [e|uDistance|] "Mean distortion pre-rotation" "meanDistortionPreR" -- xXBPreR
+U.declareRealVariable [e|uDistance|] "Mean distortion post-rotation" "meanDistortionPostR" -- xXBPostR
 U.declareRealVariable [e|U.dimensionless|] "Fraction of strongly bound crossbridges" "fractSBXB" -- Fract_{SBXB}
 U.declareRealVariable [e|uForceIntegral|] "Integral of Force" "integralForce" -- Integral_{Force}
+U.declareRealVariable [e|uNormStiffness|] "Stiffness" "stiffnessV"
+U.declareRealVariable [e|uProbability|] "Cross-bridge duty fraction pre-rotation" "xbDutyFracPreR"
+U.declareRealVariable [e|uProbability|] "Cross-bridge duty fraction post-rotation" "xbDutyFracPostR"
+U.declareRealVariable [e|uProbability|] "Cross-bridge maximum pre-rotation" "xbMaxPreRotation"
+U.declareRealVariable [e|uProbability|] "Cross-bridge maximum post-rotation" "xbMaxPostRotation"
 
 model = parameterisedModel defaultParameters
 
@@ -137,7 +142,8 @@ unitsModel p = do
   unitsModelAfterReaction p fromPre cem ces
 
 unitsModelBeforeReaction :: Monad m => Parameters m -> U.ModelBuilderT m (RExB m)
-unitsModelBeforeReaction _ = 
+unitsModelBeforeReaction p = do
+  (U.realVariable stiffnessV) `U.newEq` (stiffness p)
   U.mkNamedRealVariable uProbability
     "Amount of Permissive tropomyosin near cross bridge in Cardiac Muscle Site"
 
@@ -145,15 +151,15 @@ unitsModelAfterReaction ::
   Monad m => Parameters m -> RExB m -> M.Map R.CompartmentEntity U.RealExpression ->
     (R.CompartmentEntity, R.CompartmentEntity, R.CompartmentEntity, R.CompartmentEntity, R.CompartmentEntity) -> 
      U.ModelBuilderT m ()
-unitsModelAfterReaction p permTropNorm cem (tmNXBMuscle, xbPreRMuscle, xbPostRMuscle, preRMuscle, postRMuscle) =
+unitsModelAfterReaction p permTropNorm cem (tmPXBMuscle, xbPreRMuscle, xbPostRMuscle, preRMuscle, postRMuscle) =
   do
     -- Normalisation equation...
-    permTropNorm `U.newEq` (U.realConstant uProbability 1 .-. (return $ cem!tmNXBMuscle) .-.
+    permTropNorm `U.newEq` (U.realConstant uProbability 1 .-. (return $ cem!tmPXBMuscle) .-.
                             (return $ cem!xbPreRMuscle) .-. (return $ cem!xbPostRMuscle))
     
     let preRVar = return $ cem!preRMuscle
     let postRVar = return $ cem!postRMuscle
-      
+    
     physicalModel p preRVar postRVar
     return ()
 
@@ -172,16 +178,16 @@ meanDistortionModel p = do
   preRTerm <- U.realCommonSubexpression $ fappT .*. (hbT .+. gxbT)
   postRTerm <- U.realCommonSubexpression $ fappT .*. hfT
   tot <- U.realCommonSubexpression $ preRTerm .+. postRTerm .+. gxbT .*. (hfT .+. gappT) .+. gappT .*. hbT
-  xbDutyFracPreR <- U.realCommonSubexpression $ preRTerm ./. tot
-  xbDutyFracPostR <- U.realCommonSubexpression $ postRTerm ./. tot
+  (U.realVariable xbDutyFracPreR) `U.newEq` (preRTerm ./. tot)
+  (U.realVariable xbDutyFracPostR) `U.newEq` (postRTerm ./. tot)
   U.newBoundaryEq {- when -} (U.realConstant U.boundUnits 0 .==. U.boundVariable)
                              (U.realVariable meanDistortionPreR) {- == -} (initialxXBPreR p)
   (U.derivative (U.realVariable meanDistortionPreR)) `U.newEq`
-    (U.dConstant 0.5 .*. U.derivative (U.realVariable sarcomereLength) .+. (strainScalingFactor p ./. xbDutyFracPreR) .*. (fappT .*. (U.negateX (U.realVariable meanDistortionPreR)) .+. hbT .*. ((U.realVariable meanDistortionPostR) .-. meanStrain p .-. (U.realVariable meanDistortionPreR))))
+    (U.dConstant 0.5 .*. U.derivative (U.realVariable sarcomereLength) .+. (strainScalingFactor p ./. (U.realVariable xbDutyFracPreR)) .*. (fappT .*. (U.negateX (U.realVariable meanDistortionPreR)) .+. hbT .*. ((U.realVariable meanDistortionPostR) .-. meanStrain p .-. (U.realVariable meanDistortionPreR))))
   U.newBoundaryEq {- when -} (U.realConstant U.boundUnits 0 .==. U.boundVariable)
                              (U.realVariable meanDistortionPostR) {- == -} (initialxXBPostR p)
   (U.derivative (U.realVariable meanDistortionPostR)) `U.newEq`
-    (U.dConstant 0.5 .*. U.derivative (U.realVariable sarcomereLength) .+. (strainScalingFactor p ./. xbDutyFracPostR) .*. (hfT .*. ((U.realVariable meanDistortionPreR) .+. meanStrain p .-. (U.realVariable meanDistortionPostR))))
+    (U.dConstant 0.5 .*. U.derivative (U.realVariable sarcomereLength) .+. (strainScalingFactor p ./. (U.realVariable xbDutyFracPostR)) .*. (hfT .*. ((U.realVariable meanDistortionPreR) .+. meanStrain p .-. (U.realVariable meanDistortionPostR))))
 
 sarcomereLengthModel p preRVar postRVar = do
   fapp <- U.realCommonSubexpression $ baseRate (crossBridgeFormation p)
@@ -192,9 +198,9 @@ sarcomereLengthModel p preRVar postRVar = do
   preRContrib <- U.realCommonSubexpression $ fapp .*. (hb .+. gxb)
   postRContrib <- U.realCommonSubexpression $ fapp .*. hf
   denom <- U.realCommonSubexpression $ preRContrib .+. postRContrib .+. gxb .*. hf .+. gapp .*. (hb .+. gxb)
-  xbMaxPreR <- U.realCommonSubexpression $ preRContrib ./. denom
-  xbMaxPostR <- U.realCommonSubexpression $ postRContrib ./. denom
-  (U.realVariable fractSBXB) `U.newEq` ((preRVar .+. postRVar) ./. (xbMaxPreR .+. xbMaxPostR))
+  (U.realVariable xbMaxPreRotation) `U.newEq` (preRContrib ./. denom)
+  (U.realVariable xbMaxPostRotation) `U.newEq` (postRContrib ./. denom)
+  (U.realVariable fractSBXB) `U.newEq` ((preRVar .+. postRVar) ./. ((U.realVariable xbMaxPreRotation) .+. (U.realVariable xbMaxPostRotation)))
   U.newBoundaryEq {- when -} (U.realConstant U.boundUnits 0 .==. U.boundVariable)
                              (U.realVariable sarcomereLength) {- == -} (initialSarcomereLength p)
   (U.derivative $ U.realVariable sarcomereLength) `U.newEq`
@@ -211,13 +217,11 @@ sarcomereLengthModel p preRVar postRVar = do
   vpreloadForce `U.newEq` (preloadForce p)
   vafterloadForce `U.newEq` (afterloadForce p)
   forceNormalisation <- U.mkNamedRealVariable (uProbability $*$ uDistance) "Force normalisation factor"
-  forceNormalisation `U.newEq` (meanStrain p .*. xbMaxPostR)
+  forceNormalisation `U.newEq` (meanStrain p .*. (U.realVariable xbMaxPostRotation))
   vactiveForce `U.newEq` (singleOverlapThick p (U.realVariable sarcomereLength) .*.
                           (U.realVariable meanDistortionPreR .*.
                            preRVar .+. U.realVariable meanDistortionPostR .*. postRVar) ./.
                           forceNormalisation)
-
-  
   (U.derivative $ U.realVariable integralForce) `U.newEq`
     U.negateX (vactiveForce .+. vpassiveForce .-. vpreloadForce .-. vafterloadForce)
 
@@ -229,6 +233,11 @@ reactionModelWithCalciumTransient fromPre p = do
 
 -- The reaction model...
 reactionModel normalisedPermissive p = do
+  reactionProcesses p
+  reactionEntityInstances p normalisedPermissive
+  externalEntityIdentification
+
+reactionProcesses p = do
   R.newAllCompartmentProcesses [
     calciumBindingToTroponinSite p caTropH,
     calciumDisassociatingTroponinSite p (calciumOffTropH p) caTropH,
@@ -240,6 +249,7 @@ reactionModel normalisedPermissive p = do
     crossBridgePreToPost p, crossBridgePostToPre p
                   ]
 
+reactionEntityInstances p normalisedPermissive = do
   -- Now the entity instances where we have an initial value...
   let zeroProbFlux = U.realConstant (uNthOrderRate 0) 0
   R.addEntityInstance
@@ -249,8 +259,8 @@ reactionModel normalisedPermissive p = do
        (tmPNoXB `R.inCompartment` cardiacMuscleSite)
        (R.entityFromProcesses (initialtmPNoXB p) zeroProbFlux)
   R.addEntityInstance
-       (tmNXB `R.inCompartment` cardiacMuscleSite)
-       (R.entityFromProcesses (initialtmNXB p) zeroProbFlux)
+       (tmPXB `R.inCompartment` cardiacMuscleSite)
+       (R.entityFromProcesses (initialtmPXB p) zeroProbFlux)
   R.addEntityInstance
        (xbPreR `R.inCompartment` cardiacMuscleSite)
        (R.entityFromProcesses (initialXBPreR p) zeroProbFlux)
@@ -266,15 +276,16 @@ reactionModel normalisedPermissive p = do
        
   -- Clamped so the relative amounts add to 1.0...
   R.addEntityInstance
-       (tmPXB `R.inCompartment` cardiacMuscleSite)
+       (tmNXB `R.inCompartment` cardiacMuscleSite)
        (R.entityClamped normalisedPermissive)
 
-  tmNXBMuscle <- tmNXB `R.inCompartment` cardiacMuscleSite
+externalEntityIdentification = do
+  tmPXBMuscle <- tmPXB `R.inCompartment` cardiacMuscleSite
   xbPreRMuscle <- xbPreR `R.inCompartment` cardiacMuscleSite
   xbPostRMuscle <- xbPostR `R.inCompartment` cardiacMuscleSite
   preRMuscle <- xbPreR `R.inCompartment` cardiacMuscleSite
   postRMuscle <- xbPostR `R.inCompartment` cardiacMuscleSite
-  return (tmNXBMuscle, xbPreRMuscle, xbPostRMuscle, preRMuscle, postRMuscle)
+  return (tmPXBMuscle, xbPreRMuscle, xbPostRMuscle, preRMuscle, postRMuscle)
 
 standardRate :: Monad m => ReactionParameters m -> RExB m -> RExB m
 standardRate (ReactionParameters{baseRate=baseRate,otherMod=otherMod,speciesMod=speciesMod,q10=q10}) temp = do
@@ -318,14 +329,14 @@ titinForce p x = U.ifX (x .>=. restingSarcomereLength p)
                       (U.expX (passiveTitinExponent p .*.
                                (restingSarcomereLength p .-. x)) .-.
                        U.dConstant 1))
-collagenForce p x = U.ifX (x .>=. sarcomereLengthCollagen p)
+collagenForce p x = {- U.ifX (x .>=. sarcomereLengthCollagen p) If not in XPP code - causes instabililty -}
                      {- then -}
                      (passiveCollagenConstant p .*.
                         (U.expX (passiveCollagenExponent p .*.
-                                 (x .-. sarcomereLengthCollagen p)) ){- .-.
-                         U.dConstant 1) Note: -1 in paper, not in author's XPP code -})
+                                 (x .-. sarcomereLengthCollagen p)) ) {- .-.
+                        U.dConstant 1 Note: -1 in paper, not in author's XPP code -})
                      {- else -}
-                     (U.realConstant uNormalisedForce 0)
+                     {- (U.realConstant uNormalisedForce 0) -}
 
 passiveForce p x =
   do
@@ -341,7 +352,7 @@ passiveForce p x =
 preloadForce p = passiveForce p (initialSarcomereLength p)
 afterloadForce p = case (contractionType p)
                    of
-                     Isometric -> stiffness p .*. (initialSarcomereLength p .-. U.realVariable sarcomereLength)
+                     Isometric -> U.realVariable stiffnessV .*. (initialSarcomereLength p .-. U.realVariable sarcomereLength)
                      Isotonic -> constantAfterload p
 
 calciumBindingToTroponinSite p site compartment = do
@@ -478,10 +489,10 @@ defaultParameters =
     normalisedViscosity = U.realConstant uNormViscosity 0.003,
     constantAfterload = U.realConstant uNormalisedForce 0.001,
     stiffness = U.realConstant uNormStiffness 50.0,
-    initialSarcomereLength = U.realConstant uDistance 2.3,
+    initialSarcomereLength = U.realConstant uDistance 2.2,
     initialtmNNoXB = U.realConstant uProbability 0.9999,
     initialtmPNoXB = U.realConstant uProbability 0.0001,
-    initialtmNXB = U.realConstant uProbability 0.9998,
+    initialtmPXB = U.realConstant uProbability 0,
     initialXBPreR = U.realConstant uProbability 0.0001,
     initialXBPostR = U.realConstant uProbability 0.0001,
     initialxXBPreR = U.realConstant uDistance 0,
