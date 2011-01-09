@@ -2,3 +2,14 @@
 *.o
 *~
 Rice-Model.pdf
+*tmp
+*.cellml
+*.csv
+.RData
+.Rhistory
+XPP_Version*
+*.M
+*.png
+*.p_o
+*.zip
+*.prof
